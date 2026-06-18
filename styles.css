@@ -1,8 +1,92 @@
-/*
+.vault-rag-explorer-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 10px;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.vre-header {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 10px;
+}
 
-If your plugin does not need CSS, delete this file.
+.vre-body {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 10px;
+  overflow: hidden;
+}
 
-*/
+.vre-left-pane, .vre-right-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 10px;
+  min-width: 300px;
+  overflow-y: auto;
+}
+
+.vre-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 10px;
+  background-color: var(--background-secondary);
+  flex: 1;
+}
+
+.vre-query-panel textarea {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+
+.vre-query-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.vre-empty-state {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+}
+
+.vre-result-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 10px;
+  margin-bottom: 10px;
+  background-color: var(--background-primary);
+}
+
+.vre-result-title {
+  font-weight: bold;
+}
+
+.vre-result-path {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+.vre-result-preview {
+  font-size: 0.9em;
+  margin-bottom: 5px;
+}
+
+.vre-result-score {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+.vre-result-actions, .vre-inspector-actions {
+  display: flex;
+  gap: 5px;
+  margin-top: 10px;
+}
