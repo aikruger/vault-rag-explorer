@@ -98,7 +98,7 @@ export class QueryService {
     const lockedPaths = new Set<string>();
     const lockedNodesServiceAny = this.lockedNodesService as any;
     if (lockedNodesServiceAny && typeof lockedNodesServiceAny.getAll === "function") {
-      const lockedNodes = lockedNodesServiceAny.getAll();
+      const lockedNodes = lockedNodesServiceAny.getAll() as { path: string }[];
       for (const ln of lockedNodes) {
         lockedPaths.add(ln.path);
       }

@@ -9,7 +9,8 @@ import {
 } from "../types";
 import { RagExplorerStore } from "../state/RagExplorerStore";
 import { QueryService } from "../services/QueryService";
-import cytoscape = require("cytoscape");
+/// <reference types="cytoscape" />
+import cytoscape from "cytoscape";
 import type { LockedNode } from "../services/LockedNodesService";
 
 export class VaultRagExplorerView extends ItemView {
