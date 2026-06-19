@@ -13,6 +13,7 @@ import {
 } from "./types";
 import { VaultRagExplorerView } from "./views/VaultRagExplorerView";
 import { registerCommands } from "./commands/registerCommands";
+import { VaultRagExplorerSettingTab } from "./settings/VaultRagExplorerSettingTab";
 import { Database } from "./db/Database";
 import { AjsonParser } from "./parsers/AjsonParser";
 import { IndexBuilder } from "./db/IndexBuilder";
@@ -23,6 +24,8 @@ import { LockedNodesService } from "./services/LockedNodesService";
 import { SessionService } from "./services/SessionService";
 import { RagExportService } from "./services/RagExportService";
 import { WikilinkExpander } from "./db/WikilinkExpander";
+
+const LOG_PREFIX = "[VaultRagExplorerPlugin]";
 
 export default class VaultRagExplorerPlugin extends Plugin {
 	settings!: VaultRagExplorerSettings;
@@ -37,31 +40,18 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public wikilinkExpander!: WikilinkExpander;
 
 	async onload(): Promise<void> {
-		console.log("[VaultRagExplorer] Plugin loading");
+		console.log(`${LOG_PREFIX} onload start`);
+		console.log(`${LOG_PREFIX} default settings loaded`, DEFAULT_SETTINGS);
 
 		await this.loadSettings();
-		console.log("[VaultRagExplorer] Settings loaded", this.settings);
+		console.log(`${LOG_PREFIX} onload using smart folder`, this.settings.smartFolderPath);
 
-		// Initialize Database
-		this.db = new Database(this.app, this.settings.indexDbPath);
-		await this.db.init();
-
-		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
-		console.log("[VaultRagExplorer] IndexBuilder instantiated");
-
-		this.embeddingService = new EmbeddingService(this.settings.embeddingModelName);
-		this.embeddingReader = new EmbeddingReader(this.db);
-		console.log('[VaultRagExplorer] EmbeddingService and EmbeddingReader ready');
-
-		this.lockedNodesService = new LockedNodesService();
-		this.sessionService = new SessionService(this.app);
-		this.ragExportService = new RagExportService(this.db);
-		this.wikilinkExpander = new WikilinkExpander(this.db);
+		await this.initialiseServices();
 
 		this.registerView(
 			VIEW_TYPE_VAULT_RAG_EXPLORER,
 			(leaf: WorkspaceLeaf) => {
-				console.log("[VaultRagExplorer] Creating view instance");
+				console.log(`${LOG_PREFIX} Creating view instance`);
 				this.view = new VaultRagExplorerView(leaf, this);
 				return this.view;
 			}
@@ -70,143 +60,94 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		registerCommands(this);
 
 		this.addRibbonIcon("network", "Open Vault RAG Explorer", async () => {
-			console.log("[VaultRagExplorer] Ribbon click: open view");
+			console.log(`${LOG_PREFIX} ribbon clicked`);
 			await this.activateView();
 		});
 
 		this.addSettingTab(new VaultRagExplorerSettingTab(this.app, this));
+		console.log(`${LOG_PREFIX} settings tab registered`);
 
-		this.app.workspace.onLayoutReady(async () => {
-			console.log("[VaultRagExplorer] Layout ready");
-		});
+		if (!this.settings.smartFolderPath.trim()) {
+			console.warn(`${LOG_PREFIX} smart folder is not configured`);
+			new Notice("Vault RAG Explorer: set the Smart folder in plugin settings before running queries.");
+		}
 
-		console.log("[VaultRagExplorer] Plugin loaded successfully");
+		console.log(`${LOG_PREFIX} onload complete`);
 	}
 
 	onunload(): void {
-		console.log("[VaultRagExplorer] Plugin unloading");
+		console.log(`${LOG_PREFIX} onunload`);
 
 		this.view = null;
 		if (this.db) {
 			this.db.close();
 		}
-		console.log("[VaultRagExplorer] Plugin unloaded");
+		console.log(`${LOG_PREFIX} Plugin unloaded`);
 	}
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		console.log(`${LOG_PREFIX} settings loaded`, this.settings);
 	}
 
 	async saveSettings(): Promise<void> {
-		console.log("[VaultRagExplorer] Saving settings");
+		console.log(`${LOG_PREFIX} saving settings`, this.settings);
 		await this.saveData(this.settings);
 	}
 
+	getSmartFolderPath(): string {
+		const value = this.settings.smartFolderPath.trim();
+		console.log(`${LOG_PREFIX} getSmartFolderPath`, value);
+		return value;
+	}
+
+	private async initialiseServices(): Promise<void> {
+		const smartFolderPath = this.getSmartFolderPath();
+
+		console.log(`${LOG_PREFIX} initialiseServices`, { smartFolderPath });
+
+		// Initialize Database
+		this.db = new Database(this.app, this.settings.indexDbPath);
+		await this.db.init();
+
+		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
+		console.log(`${LOG_PREFIX} IndexBuilder instantiated`);
+
+		this.embeddingService = new EmbeddingService(this.settings.embeddingModelName);
+		this.embeddingReader = new EmbeddingReader(this.db);
+		console.log(`${LOG_PREFIX} EmbeddingService and EmbeddingReader ready`);
+
+		this.lockedNodesService = new LockedNodesService();
+		this.sessionService = new SessionService(this.app);
+		this.ragExportService = new RagExportService(this.db);
+		this.wikilinkExpander = new WikilinkExpander(this.db);
+
+		console.log(`${LOG_PREFIX} services initialised`);
+	}
+
 	async activateView(): Promise<void> {
-		console.log("[VaultRagExplorer] Activating view");
+		console.log(`${LOG_PREFIX} activateView start`);
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
-		const { workspace } = this.app;
-		let leaf = workspace.getLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER)[0];
-
-		if (!leaf) {
-			leaf = workspace.getRightLeaf(false) as WorkspaceLeaf;
-			if (!leaf) {
-				new Notice("Could not create Vault RAG Explorer leaf");
-				console.error("[VaultRagExplorer] Failed to obtain workspace leaf");
-				return;
-			}
-			await leaf.setViewState({
-				type: VIEW_TYPE_VAULT_RAG_EXPLORER,
-				active: true,
-			});
+		if (existing.length > 0 && existing[0]) {
+			console.log(`${LOG_PREFIX} reusing existing leaf`);
+			await this.app.workspace.revealLeaf(existing[0]);
+			return;
 		}
 
-		workspace.revealLeaf(leaf);
-		console.log("[VaultRagExplorer] View activated");
-	}
-}
+		const leaf = this.app.workspace.getRightLeaf(false);
+		if (!leaf) {
+			console.error(`${LOG_PREFIX} failed to acquire workspace leaf`);
+			new Notice("Could not open Vault RAG Explorer view.");
+			return;
+		}
 
-class VaultRagExplorerSettingTab extends PluginSettingTab {
-	plugin: VaultRagExplorerPlugin;
+		await leaf.setViewState({
+			type: VIEW_TYPE_VAULT_RAG_EXPLORER,
+			active: true,
+		});
 
-	constructor(app: App, plugin: VaultRagExplorerPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl).setName("Vault RAG Explorer Settings").setHeading();
-
-		new Setting(containerEl)
-			.setName("Smart Connections export path")
-			.setDesc("Path to Smart Connections export folder or source file")
-			.addText((text) =>
-				text
-					.setPlaceholder("/path/to/export")
-					.setValue(this.plugin.settings.smartConnectionsExportPath)
-					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: smartConnectionsExportPath", value);
-						this.plugin.settings.smartConnectionsExportPath = value.trim();
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Index DB path")
-			.setDesc("SQLite DB path for the local retrieval index")
-			.addText((text) =>
-				text
-					.setPlaceholder(".obsidian/plugins/vault-rag-explorer/data/smart_index.db")
-					.setValue(this.plugin.settings.indexDbPath)
-					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: indexDbPath", value);
-						this.plugin.settings.indexDbPath = value.trim();
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Embedding model name")
-			.setDesc("Must match the model used to build the index")
-			.addText((text) =>
-				text
-					.setValue(this.plugin.settings.embeddingModelName)
-					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: embeddingModelName", value);
-						this.plugin.settings.embeddingModelName = value.trim();
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Default top K")
-			.setDesc("Default number of retrieval results")
-			.addText((text) =>
-				text
-					.setValue(String(this.plugin.settings.defaultTopK))
-					.onChange(async (value) => {
-						const parsed = Number(value);
-						if (!Number.isFinite(parsed) || parsed <= 0) return;
-						console.log("[VaultRagExplorer] Setting changed: defaultTopK", parsed);
-						this.plugin.settings.defaultTopK = parsed;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Debug logging")
-			.setDesc("Enable verbose console logging")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.enableDebugLogging)
-					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: enableDebugLogging", value);
-						this.plugin.settings.enableDebugLogging = value;
-						await this.plugin.saveSettings();
-					})
-			);
+		await this.app.workspace.revealLeaf(leaf);
+		console.log(`${LOG_PREFIX} activateView complete`);
 	}
 }

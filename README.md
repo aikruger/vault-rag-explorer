@@ -45,16 +45,65 @@ Quick starting guide for new plugin devs:
 - Make sure you have a `README.md` file in the root of your repo.
 - Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
 
-## How to use
+## Configuration
 
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+Vault RAG Explorer now includes a plugin settings tab.
 
-## Manually installing the plugin
+Open:
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+**Settings → Community plugins → Vault RAG Explorer**
+
+Then set:
+
+- **Smart folder** — the path to the folder containing Smart Connections exports, derived SQLite data, or related smart data files used by this plugin.
+
+If the Smart folder is not configured, query execution is blocked and the plugin will prompt you to set it first.
+
+## Functionality
+
+Vault RAG Explorer provides an interactive retrieval workspace inside Obsidian for exploring indexed vault content.
+
+### Main operations
+
+- Run a semantic query from the Query panel.
+- Review ranked note and block hits in the Results panel.
+- Inspect a selected hit in the Inspector panel.
+- Lock or unlock relevant nodes for later export.
+- Save the current session, including graph positions.
+- Reload the most recent saved session.
+- Export locked nodes as a Markdown RAG context bundle into the vault.
+- Expand from a selected item using semantic neighbours.
+- Expand from a selected item using wikilink relationships.
+- Explore the current result set visually in the Cytoscape graph.
+
+### Interface
+
+The explorer is divided into four coordinated panels:
+
+- **Query panel** — query input and workflow actions such as Run Query, Lock All Visible, Save Session, Load Session, and Export RAG Context.
+- **Results panel** — ranked retrieval hits with actions to inspect, lock, and open the source file.
+- **Graph panel** — Cytoscape-based graph of hits and wikilink relationships.
+- **Inspector panel** — detailed information for the selected hit, including lock, semantic expansion, and wikilink expansion actions.
+
+## Current workflow
+
+1. Open **Vault RAG Explorer** from the ribbon icon or command palette.
+2. Open plugin settings and configure the **Smart folder**.
+3. Enter a query in the Query panel.
+4. Review ranked hits in the Results panel.
+5. Inspect and lock relevant notes or blocks.
+6. Expand selected nodes semantically or by wikilinks.
+7. Save the session or export locked context as Markdown.
+
+## Current limitations
+
+This milestone provides the core explorer workflow, but configuration and data-source validation are still lightweight.
+
+Known limitations include:
+
+- The Smart folder setting is currently a plain path field and does not yet browse the vault interactively.
+- Validation currently confirms presence of a configured path, but deeper verification of expected files may still need to be added.
+- Some services may still rely on milestone scaffolding while the data-loading pipeline is being completed.
 
 ## Improve code quality with eslint
 

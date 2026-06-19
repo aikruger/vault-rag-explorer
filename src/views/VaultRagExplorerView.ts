@@ -300,6 +300,15 @@ export class VaultRagExplorerView extends ItemView {
 			return;
 		}
 
+		const smartFolderPath = this.plugin.getSmartFolderPath();
+		console.log("[VaultRagExplorerView] runQuery smart folder check", { smartFolderPath });
+
+		if (!smartFolderPath) {
+			new Notice("Set the Smart folder in Vault RAG Explorer settings before running queries.");
+			console.warn("[VaultRagExplorerView] blocked query because smart folder is not configured");
+			return;
+		}
+
 		try {
 			const response = await this.queryService.runQuery({
 				queryText: query,
