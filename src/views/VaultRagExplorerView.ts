@@ -9,7 +9,7 @@ import {
 } from "../types";
 import { RagExplorerStore } from "../state/RagExplorerStore";
 import { QueryService } from "../services/QueryService";
-import cytoscape from "cytoscape";
+import cytoscape = require("cytoscape");
 import type { LockedNode } from "../services/LockedNodesService";
 
 export class VaultRagExplorerView extends ItemView {
@@ -609,7 +609,7 @@ export class VaultRagExplorerView extends ItemView {
 			layout: { name: 'cose', animate: false },
 		});
 
-		this.cytoscapeInstance.on('tap', 'node', (event: cytoscape.EventObject) => {
+		this.cytoscapeInstance?.on('tap', 'node', (event: cytoscape.EventObject) => {
 			console.log("[VaultRagExplorerView] tap event on node", event.target.id());
 			const nodeData = event.target.data();
 			console.log('[Graph] Node tapped', nodeData);
