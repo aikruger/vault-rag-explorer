@@ -30,6 +30,7 @@ export class VaultRagExplorerView extends ItemView {
 		this.plugin = plugin;
 		this.store = new RagExplorerStore();
 		this.queryService = new QueryService(plugin.db, plugin.embeddingService, plugin.embeddingReader);
+		this.queryService.lockedNodesService = plugin.lockedNodesService;
 		console.log("[VaultRagExplorerView] Constructor");
 	}
 
@@ -169,7 +170,8 @@ export class VaultRagExplorerView extends ItemView {
 
 			const graphPositions: Record<string, {x: number, y: number}> = {};
 			if (this.cytoscapeInstance) {
-				this.cytoscapeInstance.nodes().forEach(node => {
+				this.cytoscapeInstance.nodes().forEach((node: cytoscape.NodeSingular) => {
+					console.log("[VaultRagExplorerView] saveSession node position", node.id());
 					graphPositions[node.id()] = { ...node.position() };
 				});
 			}
@@ -216,8 +218,12 @@ export class VaultRagExplorerView extends ItemView {
 
 				// Re-apply layout positions if possible
 				if (this.cytoscapeInstance) {
-					this.cytoscapeInstance.nodes().forEach(node => {
+					this.cytoscapeInstance.nodes().forEach((node: cytoscape.NodeSingular) => {
 						const pos = session.graphPositions[node.id()];
+						console.log("[VaultRagExplorerView] loadSession restoring node position", {
+							id: node.id(),
+							hasPosition: !!pos,
+						});
 						if (pos) {
 							node.position(pos);
 						}
@@ -603,7 +609,8 @@ export class VaultRagExplorerView extends ItemView {
 			layout: { name: 'cose', animate: false },
 		});
 
-		this.cytoscapeInstance.on('tap', 'node', (event) => {
+		this.cytoscapeInstance.on('tap', 'node', (event: cytoscape.EventObject) => {
+			console.log("[VaultRagExplorerView] tap event on node", event.target.id());
 			const nodeData = event.target.data();
 			console.log('[Graph] Node tapped', nodeData);
 			this.store.setState({ selectedNodeId: nodeData.id });
@@ -616,6 +623,10 @@ export class VaultRagExplorerView extends ItemView {
 					this.renderMockInspector(hit);
 				}
 			}
+		});
+
+		console.log("[VaultRagExplorerView] Cytoscape instance created", {
+			nodeCount: this.cytoscapeInstance?.nodes().length ?? 0,
 		});
 
 		console.log('[VaultRagExplorerView] Cytoscape graph rendered', { nodeCount: hits.length });

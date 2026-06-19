@@ -8,7 +8,9 @@ export class EmbeddingService {
   private pipelineInstance: unknown = null;
 
   constructor(modelName = "TaylorAI/bge-micro-v2") {
+    console.log("[EmbeddingService] Module loaded OK");
     this.modelName = modelName;
+    console.log(`[EmbeddingService] constructor called, model=${this.modelName}`);
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -17,6 +19,7 @@ export class EmbeddingService {
       console.log(`${LOG_PREFIX} Loading pipeline for model ${this.modelName}`);
       try {
         this.pipelineInstance = await pipeline("feature-extraction", this.modelName);
+        console.log(`[EmbeddingService] pipeline ready for model ${this.modelName}`);
       } catch (error) {
         console.error(`${LOG_PREFIX} embed failed: ${error}`);
         throw error;
@@ -24,7 +27,7 @@ export class EmbeddingService {
     }
 
     try {
-      const pipelineCall = this.pipelineInstance as (text: string, options: any) => Promise<{ data: Float32Array }>;
+      const pipelineCall = this.pipelineInstance as (text: string, options: unknown) => Promise<{ data: Float32Array }>;
       const output = await pipelineCall(text, { pooling: "mean", normalize: true });
       const vec = output.data;
 

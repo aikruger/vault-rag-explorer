@@ -13,7 +13,7 @@ export class QueryService {
   ) {}
 
   // Optional dependency, to avoid circular dependencies or massive refactors late in the process.
-  public lockedNodesService: any; // We can set this from the plugin if needed.
+  public lockedNodesService: unknown; // We can set this from the plugin if needed.
 
   async runQuery(request: QueryRequest): Promise<QueryResponse> {
     const startTime = Date.now();
@@ -96,8 +96,8 @@ export class QueryService {
 
     // Milestone 6 wikilink boost calculation
     const lockedPaths = new Set<string>();
-    if (this.lockedNodesService) {
-      const lockedNodes = this.lockedNodesService.getAll();
+    if (this.lockedNodesService && typeof (this.lockedNodesService as any).getAll === "function") {
+      const lockedNodes = (this.lockedNodesService as any).getAll();
       for (const ln of lockedNodes) {
         lockedPaths.add(ln.path);
       }

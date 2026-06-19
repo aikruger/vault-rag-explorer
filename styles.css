@@ -37,6 +37,11 @@
   flex: 1;
 }
 
+.vre-graph-canvas {
+  flex: 1;
+  min-height: 300px;
+}
+
 .vre-query-panel textarea {
   width: 100%;
   min-height: 80px;
