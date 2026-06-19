@@ -152,22 +152,65 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 	});
 
 	plugin.addCommand({
-		id: "rebuild-vault-rag-index",
-		name: "Rebuild Vault RAG index",
+		id: "vault-rag-explorer-build-index",
+		name: "Build / Rebuild Index from Smart Connections export",
 		callback: async () => {
-			console.log("[VaultRagExplorer] Command: rebuild-vault-rag-index");
+			console.log("[Commands] Build index triggered");
+			const exportPath = plugin.settings.smartConnectionsExportPath;
+			if (!exportPath) {
+				new Notice("Set the Smart Connections export path in settings first.");
+				return;
+			}
+			new Notice("Building index… this may take a moment.");
+
+			try {
+				const { AjsonParser } = await import("../parsers/AjsonParser");
+				const parser = new AjsonParser(plugin.settings.enableDebugLogging);
+				const parseResult = await parser.parseFile(exportPath);
+
+				console.log("[Commands] Parse complete", {
+					sources: parseResult.sources.length,
+					blocks: parseResult.blocks.length,
+					errors: parseResult.errors.length,
+				});
+
+				const buildResult = await plugin.indexBuilder.buildIndex(
+					parseResult.sources,
+					parseResult.blocks,
+					false // incremental by default
+				);
+
+				new Notice(
+					`Index built: ${buildResult.sourcesInserted + buildResult.sourcesUpdated} sources, ` +
+					`${buildResult.blocksInserted + buildResult.blocksUpdated} blocks, ` +
+					`${buildResult.embeddingsWritten} embeddings in ${buildResult.durationMs}ms`
+				);
+				console.log("[Commands] Build index complete", buildResult);
+			} catch (e) {
+				const msg = `Index build failed: ${String(e)}`;
+				console.error("[Commands]", msg, e);
+				new Notice(`Vault RAG Explorer: ${msg}`);
+			}
+		},
+	});
+
+	plugin.addCommand({
+		id: "rebuild-vault-rag-index-force",
+		name: "Force Rebuild Vault RAG index",
+		callback: async () => {
+			console.log("[VaultRagExplorer] Command: rebuild-vault-rag-index-force");
 
 			const exportPath = plugin.settings.smartConnectionsExportPath?.trim();
 			if (!exportPath) {
 				new Notice(
 					"Vault RAG Explorer: set a Smart Connections export path in settings first."
 				);
-				console.warn("[VaultRagExplorer] rebuild-vault-rag-index: no export path configured");
+				console.warn("[VaultRagExplorer] rebuild-vault-rag-index-force: no export path configured");
 				return;
 			}
 
-			new Notice("Vault RAG Explorer: building index… (check console for progress)");
-			console.log("[VaultRagExplorer] Starting index build from:", exportPath);
+			new Notice("Vault RAG Explorer: force building index… (check console for progress)");
+			console.log("[VaultRagExplorer] Starting force index build from:", exportPath);
 
 			try {
 				const { AjsonParser } = await import("../parsers/AjsonParser");
@@ -198,17 +241,17 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					return;
 				}
 
-				console.log("[VaultRagExplorer] Writing to database…");
+				console.log("[VaultRagExplorer] Writing to database (force)…");
 				const buildResult = await plugin.indexBuilder.buildIndex(
 					parseResult.sources,
 					parseResult.blocks,
-					false // incremental: skip unchanged records
+					true // forceRebuild: DO NOT skip unchanged records
 				);
 
-				console.log("[VaultRagExplorer] Index build complete", buildResult);
+				console.log("[VaultRagExplorer] Index force build complete", buildResult);
 
 				const summary =
-					`Index built in ${buildResult.durationMs}ms: ` +
+					`Force index built in ${buildResult.durationMs}ms: ` +
 					`${buildResult.sourcesInserted} sources inserted, ` +
 					`${buildResult.blocksInserted} blocks inserted, ` +
 					`${buildResult.embeddingsWritten} embeddings written.`;

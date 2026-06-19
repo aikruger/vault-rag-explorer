@@ -17,11 +17,24 @@ import { Database } from "./db/Database";
 import { AjsonParser } from "./parsers/AjsonParser";
 import { IndexBuilder } from "./db/IndexBuilder";
 
+import { EmbeddingService } from "./services/EmbeddingService";
+import { EmbeddingReader } from "./db/EmbeddingReader";
+import { LockedNodesService } from "./services/LockedNodesService";
+import { SessionService } from "./services/SessionService";
+import { RagExportService } from "./services/RagExportService";
+import { WikilinkExpander } from "./db/WikilinkExpander";
+
 export default class VaultRagExplorerPlugin extends Plugin {
 	settings!: VaultRagExplorerSettings;
 	view: VaultRagExplorerView | null = null;
 	db!: Database;
 	public indexBuilder!: IndexBuilder;
+	public embeddingService!: EmbeddingService;
+	public embeddingReader!: EmbeddingReader;
+	public lockedNodesService!: LockedNodesService;
+	public sessionService!: SessionService;
+	public ragExportService!: RagExportService;
+	public wikilinkExpander!: WikilinkExpander;
 
 	async onload(): Promise<void> {
 		console.log("[VaultRagExplorer] Plugin loading");
@@ -35,6 +48,15 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
 		console.log("[VaultRagExplorer] IndexBuilder instantiated");
+
+		this.embeddingService = new EmbeddingService(this.settings.embeddingModelName);
+		this.embeddingReader = new EmbeddingReader(this.db);
+		console.log('[VaultRagExplorer] EmbeddingService and EmbeddingReader ready');
+
+		this.lockedNodesService = new LockedNodesService();
+		this.sessionService = new SessionService(this.app);
+		this.ragExportService = new RagExportService(this.db);
+		this.wikilinkExpander = new WikilinkExpander(this.db);
 
 		this.registerView(
 			VIEW_TYPE_VAULT_RAG_EXPLORER,

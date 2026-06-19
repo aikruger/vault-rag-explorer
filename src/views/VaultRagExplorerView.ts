@@ -9,6 +9,8 @@ import {
 } from "../types";
 import { RagExplorerStore } from "../state/RagExplorerStore";
 import { QueryService } from "../services/QueryService";
+import cytoscape from "cytoscape";
+import type { LockedNode } from "../services/LockedNodesService";
 
 export class VaultRagExplorerView extends ItemView {
 	plugin: VaultRagExplorerPlugin;
@@ -21,12 +23,13 @@ export class VaultRagExplorerView extends ItemView {
 	private inspectorEl: HTMLDivElement | null = null;
 
 	private unsubscribeStore: (() => void) | null = null;
+	private cytoscapeInstance: cytoscape.Core | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: VaultRagExplorerPlugin) {
 		super(leaf);
 		this.plugin = plugin;
 		this.store = new RagExplorerStore();
-		this.queryService = new QueryService(plugin.db);
+		this.queryService = new QueryService(plugin.db, plugin.embeddingService, plugin.embeddingReader);
 		console.log("[VaultRagExplorerView] Constructor");
 	}
 
@@ -138,13 +141,104 @@ export class VaultRagExplorerView extends ItemView {
 		const lockAllBtn = controls.createEl("button", { text: "Lock All Visible" });
 		lockAllBtn.addEventListener("click", () => {
 			console.log("[VaultRagExplorerView] Lock all visible clicked");
-			new Notice("Lock all visible: not implemented yet");
+			const hits = this.store.getState().queryResponse?.hits || [];
+			for (const hit of hits) {
+				this.plugin.lockedNodesService.lock({
+					nodeType: hit.nodeType,
+					nodeId: hit.nodeId,
+					path: hit.path,
+					title: hit.title,
+					blockKey: hit.blockKey,
+					lockedAt: Date.now()
+				});
+			}
+			new Notice(`Locked ${hits.length} visible nodes`);
+			this.render(); // Re-render to update lock states
 		});
 
 		const saveBtn = controls.createEl("button", { text: "Save Session" });
-		saveBtn.addEventListener("click", () => {
+		saveBtn.addEventListener("click", async () => {
 			console.log("[VaultRagExplorerView] Save session clicked");
-			new Notice("Save session: not implemented yet");
+			const state = this.store.getState();
+			if (!state.queryResponse) {
+				new Notice("No active query to save.");
+				return;
+			}
+
+			const sessionId = state.activeSessionId || `session-${Date.now()}`;
+
+			const graphPositions: Record<string, {x: number, y: number}> = {};
+			if (this.cytoscapeInstance) {
+				this.cytoscapeInstance.nodes().forEach(node => {
+					graphPositions[node.id()] = { ...node.position() };
+				});
+			}
+
+			await this.plugin.sessionService.save({
+				id: sessionId,
+				createdAt: Date.now(),
+				queryText: state.currentQueryText,
+				queryOptions: state.queryOptions,
+				lockedNodes: this.plugin.lockedNodesService.getAll(),
+				graphPositions
+			});
+
+			this.store.setState({ activeSessionId: sessionId });
+			new Notice(`Session saved: ${sessionId}`);
+		});
+
+		const loadBtn = controls.createEl("button", { text: "Load Session" });
+		loadBtn.addEventListener("click", async () => {
+			console.log("[VaultRagExplorerView] Load session clicked");
+			const sessions = await this.plugin.sessionService.list();
+			if (sessions.length === 0) {
+				new Notice("No saved sessions found.");
+				return;
+			}
+			// Load the most recent session for milestone purposes.
+			// A real UI would show a modal selector.
+			const recent = sessions[0];
+			if (!recent) return;
+			const session = await this.plugin.sessionService.load(recent.id);
+			if (session) {
+				this.store.setState({
+					activeSessionId: session.id,
+					currentQueryText: session.queryText,
+					queryOptions: session.queryOptions
+				});
+
+				this.plugin.lockedNodesService.clear();
+				for (const node of session.lockedNodes) {
+					this.plugin.lockedNodesService.lock(node);
+				}
+
+				await this.runQuery(); // Re-run query to populate hits
+
+				// Re-apply layout positions if possible
+				if (this.cytoscapeInstance) {
+					this.cytoscapeInstance.nodes().forEach(node => {
+						const pos = session.graphPositions[node.id()];
+						if (pos) {
+							node.position(pos);
+						}
+					});
+				}
+				new Notice(`Session loaded: ${session.id}`);
+			}
+		});
+
+		const exportBtn = controls.createEl("button", { text: "Export RAG Context" });
+		exportBtn.addEventListener("click", async () => {
+			console.log("[VaultRagExplorerView] Export RAG Context clicked");
+			const locked = this.plugin.lockedNodesService.getAll();
+			if (locked.length === 0) {
+				new Notice("No locked nodes to export.");
+				return;
+			}
+			const bundle = await this.plugin.ragExportService.buildContextBundle(locked);
+			const fileName = `rag_context_export_${Date.now()}.md`;
+			await this.app.vault.adapter.write(fileName, bundle);
+			new Notice(`Exported ${bundle.length} chars to ${fileName}`);
 		});
 	}
 
@@ -209,7 +303,7 @@ export class VaultRagExplorerView extends ItemView {
 
 			this.renderMockResults(response.hits);
 			this.renderMockInspector(null);
-			this.renderMockGraph(response.hits);
+			this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
 
 			new Notice(`Query complete: ${response.hits.length} hits`);
 			console.log("[VaultRagExplorerView] Query complete", { hitCount: response.hits.length });
@@ -251,10 +345,32 @@ export class VaultRagExplorerView extends ItemView {
 				this.renderMockInspector(hit);
 			});
 
-			const lockBtn = actions.createEl("button", { text: "Lock" });
+			const isLocked = this.plugin.lockedNodesService.isLocked(`${hit.nodeType}-${hit.nodeId}`);
+			const lockBtn = actions.createEl("button", { text: isLocked ? "Locked ✓" : "Lock" });
 			lockBtn.addEventListener("click", () => {
-				console.log("[VaultRagExplorerView] Lock result", hit);
-				new Notice(`Lock node: ${hit.title} (not implemented yet)`);
+				const key = `${hit.nodeType}-${hit.nodeId}`;
+				if (this.plugin.lockedNodesService.isLocked(key)) {
+					this.plugin.lockedNodesService.unlock(key);
+					lockBtn.setText("Lock");
+					console.log("[View] Unlocked node", hit.path);
+					new Notice(`Unlocked: ${hit.title}`);
+				} else {
+					this.plugin.lockedNodesService.lock({
+						nodeType: hit.nodeType,
+						nodeId: hit.nodeId,
+						path: hit.path,
+						title: hit.title,
+						blockKey: hit.blockKey,
+						lockedAt: Date.now(),
+					});
+					lockBtn.setText("Locked ✓");
+					console.log("[View] Locked node", hit.path);
+					new Notice(`Locked: ${hit.title}`);
+				}
+				// Re-render inspector if it's currently showing this node
+				if (this.store.getState().selectedNodeId === key) {
+					this.renderMockInspector(hit);
+				}
 			});
 
 			const openBtn = actions.createEl("button", { text: "Open" });
@@ -304,36 +420,204 @@ export class VaultRagExplorerView extends ItemView {
 
 		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
 
-		actions.createEl("button", { text: "Lock Node" }).addEventListener("click", () => {
+		const key = `${hit.nodeType}-${hit.nodeId}`;
+		const isLocked = this.plugin.lockedNodesService.isLocked(key);
+
+		actions.createEl("button", { text: isLocked ? "Locked ✓" : "Lock Node" }).addEventListener("click", (e) => {
 			console.log("[VaultRagExplorerView] Inspector lock clicked", hit);
-			new Notice("Lock node: not implemented yet");
+
+			if (this.plugin.lockedNodesService.isLocked(key)) {
+				this.plugin.lockedNodesService.unlock(key);
+				(e.target as HTMLButtonElement).setText("Lock Node");
+				console.log("[View] Unlocked node", hit.path);
+				new Notice(`Unlocked: ${hit.title}`);
+			} else {
+				this.plugin.lockedNodesService.lock({
+					nodeType: hit.nodeType,
+					nodeId: hit.nodeId,
+					path: hit.path,
+					title: hit.title,
+					blockKey: hit.blockKey,
+					lockedAt: Date.now(),
+				});
+				(e.target as HTMLButtonElement).setText("Locked ✓");
+				console.log("[View] Locked node", hit.path);
+				new Notice(`Locked: ${hit.title}`);
+			}
+			// Re-render results to update lock states
+			const response = this.store.getState().queryResponse;
+			if (response) {
+				this.renderMockResults(response.hits);
+			}
 		});
 
-		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", () => {
+		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
 			console.log("[VaultRagExplorerView] Inspector semantic expand clicked", hit);
-			new Notice("Expand semantic: not implemented yet");
+			const ownerType = hit.nodeType === "note" ? "source" : "block";
+			const state = this.store.getState();
+			const modelName = state.queryOptions.embeddingModelName || "TaylorAI/bge-micro-v2";
+
+			try {
+				const response = await this.queryService.expandSemantic(ownerType, hit.nodeId, modelName, state.queryOptions.topK);
+
+				// Merge new hits into the store
+				const currentResponse = state.queryResponse;
+				if (currentResponse) {
+					// Extremely simplistic merge for demonstration. A proper merge would deduplicate by ID.
+					const mergedHits = [...currentResponse.hits];
+					for (const newHit of response.hits) {
+						if (!mergedHits.some(h => h.nodeId === newHit.nodeId && h.nodeType === newHit.nodeType)) {
+							mergedHits.push(newHit);
+						}
+					}
+
+					const newResponse = { ...currentResponse, hits: mergedHits };
+					this.store.setState({ queryResponse: newResponse });
+					this.renderMockResults(newResponse.hits);
+					this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
+					new Notice(`Expanded semantics with ${response.hits.length} hits`);
+				}
+			} catch (e) {
+				console.error("[VaultRagExplorerView] Expand Semantic failed", e);
+				new Notice("Expand Semantic failed");
+			}
 		});
 
 		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
 			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", hit);
-			new Notice("Expand wikilinks: not implemented yet");
+			const expander = this.plugin.wikilinkExpander;
+			const expansions = expander.expandFrom(hit.path);
+
+			if (expansions.length === 0) {
+				new Notice("No wikilink expansions found.");
+				return;
+			}
+
+			if (this.cytoscapeInstance) {
+				const elementsToAdd: cytoscape.ElementDefinition[] = [];
+				for (const expansion of expansions) {
+					const dstId = this.getSourceIdForPath(expansion.path);
+					if (dstId) {
+						// Add node if not exists
+						if (this.cytoscapeInstance.$id(`note-${dstId}`).length === 0) {
+							elementsToAdd.push({
+								data: {
+									id: `note-${dstId}`,
+									label: expansion.path,
+									nodeType: "note",
+									score: 0,
+									locked: false
+								}
+							});
+						}
+
+						// Add edge
+						const edgeId = `edge-expansion-${hit.nodeId}-${dstId}-${expansion.direction}`;
+						if (this.cytoscapeInstance.$id(edgeId).length === 0) {
+							const source = expansion.direction === "outbound" ? `${hit.nodeType}-${hit.nodeId}` : `note-${dstId}`;
+							const target = expansion.direction === "outbound" ? `note-${dstId}` : `${hit.nodeType}-${hit.nodeId}`;
+
+							elementsToAdd.push({
+								data: {
+									id: edgeId,
+									source,
+									target,
+									edgeType: "wikilink"
+								}
+							});
+						}
+					}
+				}
+				this.cytoscapeInstance.add(elementsToAdd);
+				this.cytoscapeInstance.layout({ name: 'cose', animate: true }).run();
+				new Notice(`Expanded with ${expansions.length} wikilinks`);
+			}
 		});
 	}
 
-	private renderMockGraph(hits: RetrievalHit[]): void {
+	private getOutlinksForPath(path: string): string[] {
+		const rawDb = this.plugin.db.getDb();
+		const rows = rawDb.prepare(`
+			SELECT dst_path FROM wikilinks WHERE src_source_id = (SELECT id FROM sources WHERE path = ?)
+		`).all(path) as { dst_path: string }[];
+		return rows.map(r => r.dst_path);
+	}
+
+	private getSourceIdForPath(path: string): number | null {
+		const rawDb = this.plugin.db.getDb();
+		const row = rawDb.prepare(`
+			SELECT id FROM sources WHERE path = ?
+		`).get(path) as { id: number } | undefined;
+		return row ? row.id : null;
+	}
+
+	private renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): void {
 		if (!this.graphEl) return;
 		this.graphEl.empty();
 
-		const summary = this.graphEl.createDiv({ cls: "vre-graph-summary" });
-		summary.createEl("div", {
-			text: `Graph placeholder: ${hits.length} nodes would be rendered here.`,
-		});
-		summary.createEl("div", {
-			text: "Upcoming: Cytoscape graph with pin/hide/lock/expand actions.",
+		const elements: cytoscape.ElementDefinition[] = [];
+
+		// Add hit nodes
+		for (const hit of hits) {
+			elements.push({
+				data: {
+					id: `${hit.nodeType}-${hit.nodeId}`,
+					label: hit.title,
+					nodeType: hit.nodeType,
+					score: hit.finalScore,
+					locked: lockedNodes.some(n => n.nodeId === hit.nodeId && n.nodeType === hit.nodeType),
+				}
+			});
+		}
+
+		// Add wikilink edges — query from DB: source's outlinks that appear in results
+		const resultPaths = new Set(hits.map(h => h.path));
+		for (const hit of hits) {
+			const outlinks = this.getOutlinksForPath(hit.path);
+			for (const dst of outlinks) {
+				if (resultPaths.has(dst)) {
+					const dstId = this.getSourceIdForPath(dst);
+					if (dstId) {
+						elements.push({
+							data: {
+								id: `edge-${hit.nodeId}-${dst}`,
+								source: `${hit.nodeType}-${hit.nodeId}`,
+								target: `note-${dstId}`,
+								edgeType: 'wikilink',
+							}
+						});
+					}
+				}
+			}
+		}
+
+		this.cytoscapeInstance = cytoscape({
+			container: this.graphEl,
+			elements,
+			style: [
+				{ selector: 'node', style: { label: 'data(label)', 'font-size': '10px', 'background-color': '#4a9eff' } },
+				{ selector: 'node[locked=1]', style: { 'background-color': '#ff6b35', 'border-width': 2 } },
+				{ selector: 'node[nodeType="block"]', style: { shape: 'rectangle' } },
+				{ selector: 'edge', style: { 'line-color': '#888', 'width': 1, 'target-arrow-shape': 'triangle' } },
+			],
+			layout: { name: 'cose', animate: false },
 		});
 
-		console.log("[VaultRagExplorerView] Graph placeholder rendered", {
-			nodeCount: hits.length,
+		this.cytoscapeInstance.on('tap', 'node', (event) => {
+			const nodeData = event.target.data();
+			console.log('[Graph] Node tapped', nodeData);
+			this.store.setState({ selectedNodeId: nodeData.id });
+
+			// Re-render inspector with selected node data
+			const response = this.store.getState().queryResponse;
+			if (response) {
+				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeData.id);
+				if (hit) {
+					this.renderMockInspector(hit);
+				}
+			}
 		});
+
+		console.log('[VaultRagExplorerView] Cytoscape graph rendered', { nodeCount: hits.length });
 	}
 }

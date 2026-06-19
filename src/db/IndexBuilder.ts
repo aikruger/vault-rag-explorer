@@ -251,15 +251,24 @@ export class IndexBuilder {
 
             const existing = selectBlockHash.get(block.blockKey);
 
-            if (!forceRebuild && existing && existing.hash !== undefined) {
-              // hash is stored inside raw_json / metadata, re-check using embedHash as proxy
-              // For simplicity, skip if block_key already exists and forceRebuild is false
-              // and the embed hash matches. In Milestone 6 this can be refined.
-              result.blocksSkipped++;
-              if (this.enableDebugLogging) {
-                console.log(`${LOG_PREFIX} Block exists, skipping (incremental): ${block.blockKey}`);
+            const storedHashRow = rawDb.prepare(
+              "SELECT raw_json FROM blocks WHERE block_key = ?"
+            ).get(block.blockKey) as { raw_json: string } | undefined;
+
+            if (!forceRebuild && storedHashRow) {
+              try {
+                const storedRaw = JSON.parse(storedHashRow.raw_json);
+                const storedEmbedHash = storedRaw?.last_embed?.hash ?? '';
+                if (storedEmbedHash === block.embedHash && block.embedHash !== '') {
+                  result.blocksSkipped++;
+                  if (this.enableDebugLogging) {
+                    console.log(`${LOG_PREFIX} Block embed hash unchanged, skipping: ${block.blockKey}`);
+                  }
+                  continue;
+                }
+              } catch (e) {
+                console.warn(`${LOG_PREFIX} Could not parse raw_json for hash check: ${block.blockKey}`, e);
               }
-              continue;
             }
 
             const row = {
