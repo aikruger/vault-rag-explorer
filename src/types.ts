@@ -194,4 +194,78 @@ export const DEFAULT_RAG_EXPLORER_STATE: RagExplorerState = {
 		loadSession: false,
 	},
 	error: null,
-};
+};// ---------------------------------------------------------------------------
+// Milestone 5: Parser and IndexBuilder types
+// ---------------------------------------------------------------------------
+
+/**
+ * One embedding vector extracted from an .ajson record.
+ * The model name is the dynamic key under which the vector lives in the raw JSON.
+ */
+export interface ParsedEmbedding {
+  modelName: string;       // e.g. "TaylorAI/bge-micro-v2"
+  vec: number[];           // raw float array as parsed from JSON
+  dim: number;             // vec.length — validated on parse
+}
+
+/**
+ * A normalized note-level record produced by AjsonParser.
+ * Corresponds to a row in the `sources` table.
+ */
+export interface ParsedSource {
+  path: string;            // vault-relative path, e.g. "Research/Methods.md"
+  title: string;           // derived: last segment of path without extension
+  hash: string;            // last_read.hash from .ajson — used for incremental re-index
+  embedHash: string;       // last_embed.hash from .ajson
+  mtime: number;           // last_read.mtime (Unix ms) or 0 if absent
+  outlinks: string[];      // array of destination paths from the outlinks field
+  metadata: Record<string, unknown>;  // any remaining top-level fields stored as JSON
+  rawJson: string;         // JSON.stringify of the original record for audit
+  embeddings: ParsedEmbedding[];      // 0-n embeddings (one per model present)
+}
+
+/**
+ * A normalized block-level record produced by AjsonParser.
+ * Corresponds to a row in the `blocks` table.
+ */
+export interface ParsedBlock {
+  blockKey: string;        // full key, e.g. "Research/Methods.md#{heading text}"
+  blockPath: string;       // vault-relative path of the parent note
+  blockLabel: string;      // human-readable label: the heading or first ~80 chars of text
+  lineStart: number;       // line_start from .ajson
+  lineEnd: number;         // line_end from .ajson
+  text: string;            // block body text, or empty string if absent
+  textLength: number;      // text.length
+  hash: string;            // last_read.hash
+  embedHash: string;       // last_embed.hash
+  outlinks: string[];      // outlinks for wikilink graph
+  metadata: Record<string, unknown>;
+  rawJson: string;
+  embeddings: ParsedEmbedding[];
+}
+
+/**
+ * Summary returned by AjsonParser.parseFile() describing what was found.
+ */
+export interface ParseResult {
+  sources: ParsedSource[];
+  blocks: ParsedBlock[];
+  skippedCount: number;    // records skipped due to missing required fields
+  errors: string[];        // non-fatal parse error messages (one per skipped record)
+}
+
+/**
+ * Summary returned by IndexBuilder.buildIndex() describing what was written.
+ */
+export interface IndexBuildResult {
+  sourcesInserted: number;
+  sourcesUpdated: number;
+  sourcesSkipped: number;   // skipped because hash unchanged (incremental mode)
+  blocksInserted: number;
+  blocksUpdated: number;
+  blocksSkipped: number;
+  embeddingsWritten: number;
+  wikilinksWritten: number;
+  durationMs: number;
+  errors: string[];
+}

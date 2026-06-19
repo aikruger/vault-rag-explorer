@@ -14,11 +14,14 @@ import {
 import { VaultRagExplorerView } from "./views/VaultRagExplorerView";
 import { registerCommands } from "./commands/registerCommands";
 import { Database } from "./db/Database";
+import { AjsonParser } from "./parsers/AjsonParser";
+import { IndexBuilder } from "./db/IndexBuilder";
 
 export default class VaultRagExplorerPlugin extends Plugin {
 	settings!: VaultRagExplorerSettings;
 	view: VaultRagExplorerView | null = null;
 	db!: Database;
+	public indexBuilder!: IndexBuilder;
 
 	async onload(): Promise<void> {
 		console.log("[VaultRagExplorer] Plugin loading");
@@ -29,6 +32,9 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		// Initialize Database
 		this.db = new Database(this.app, this.settings.indexDbPath);
 		await this.db.init();
+
+		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
+		console.log("[VaultRagExplorer] IndexBuilder instantiated");
 
 		this.registerView(
 			VIEW_TYPE_VAULT_RAG_EXPLORER,

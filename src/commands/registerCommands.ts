@@ -154,9 +154,79 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 	plugin.addCommand({
 		id: "rebuild-vault-rag-index",
 		name: "Rebuild Vault RAG index",
-		callback: () => {
+		callback: async () => {
 			console.log("[VaultRagExplorer] Command: rebuild-vault-rag-index");
-			new Notice("Rebuild index: not implemented yet");
+
+			const exportPath = plugin.settings.smartConnectionsExportPath?.trim();
+			if (!exportPath) {
+				new Notice(
+					"Vault RAG Explorer: set a Smart Connections export path in settings first."
+				);
+				console.warn("[VaultRagExplorer] rebuild-vault-rag-index: no export path configured");
+				return;
+			}
+
+			new Notice("Vault RAG Explorer: building index… (check console for progress)");
+			console.log("[VaultRagExplorer] Starting index build from:", exportPath);
+
+			try {
+				const { AjsonParser } = await import("../parsers/AjsonParser");
+				const parser = new AjsonParser(plugin.settings.enableDebugLogging);
+
+				console.log("[VaultRagExplorer] Parsing .ajson files from:", exportPath);
+				const parseResult = await parser.parseFile(exportPath);
+
+				console.log("[VaultRagExplorer] Parse complete", {
+					sources: parseResult.sources.length,
+					blocks: parseResult.blocks.length,
+					skipped: parseResult.skippedCount,
+					parseErrors: parseResult.errors.length,
+				});
+
+				if (parseResult.errors.length > 0) {
+					console.warn(
+						"[VaultRagExplorer] Parse warnings:",
+						parseResult.errors.slice(0, 10)
+					);
+				}
+
+				if (parseResult.sources.length === 0 && parseResult.blocks.length === 0) {
+					new Notice(
+						"Vault RAG Explorer: no records found. Check your export path in settings."
+					);
+					console.error("[VaultRagExplorer] No records parsed — aborting index build");
+					return;
+				}
+
+				console.log("[VaultRagExplorer] Writing to database…");
+				const buildResult = await plugin.indexBuilder.buildIndex(
+					parseResult.sources,
+					parseResult.blocks,
+					false // incremental: skip unchanged records
+				);
+
+				console.log("[VaultRagExplorer] Index build complete", buildResult);
+
+				const summary =
+					`Index built in ${buildResult.durationMs}ms: ` +
+					`${buildResult.sourcesInserted} sources inserted, ` +
+					`${buildResult.blocksInserted} blocks inserted, ` +
+					`${buildResult.embeddingsWritten} embeddings written.`;
+
+				new Notice(`Vault RAG Explorer: ${summary}`);
+				console.log("[VaultRagExplorer]", summary);
+
+				if (buildResult.errors.length > 0) {
+					console.warn(
+						`[VaultRagExplorer] ${buildResult.errors.length} non-fatal index errors:`,
+						buildResult.errors.slice(0, 10)
+					);
+				}
+			} catch (e) {
+				const msg = `Index build failed: ${String(e)}`;
+				console.error("[VaultRagExplorer]", msg, e);
+				new Notice(`Vault RAG Explorer: ${msg}`);
+			}
 		},
 	});
 
