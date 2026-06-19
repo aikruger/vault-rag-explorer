@@ -96,9 +96,9 @@ export class QueryService {
 
     // Milestone 6 wikilink boost calculation
     const lockedPaths = new Set<string>();
-    const _lockedNodesService = this.lockedNodesService as any;
-    if (_lockedNodesService && typeof _lockedNodesService.getAll === "function") {
-      const lockedNodes = _lockedNodesService.getAll();
+    const lnService = this.lockedNodesService as any;
+    if (lnService && typeof lnService.getAll === "function") {
+      const lockedNodes = lnService.getAll() as { path: string }[];
       for (const ln of lockedNodes) {
         lockedPaths.add(ln.path);
       }

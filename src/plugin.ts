@@ -40,6 +40,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public wikilinkExpander!: WikilinkExpander;
 
 	async onload(): Promise<void> {
+		console.log(`${LOG_PREFIX} ✅ VaultRagExplorerPlugin.onload() — boilerplate replaced successfully`);
 		console.log(`${LOG_PREFIX} onload start`);
 		console.log(`${LOG_PREFIX} default settings loaded`, DEFAULT_SETTINGS);
 
@@ -67,10 +68,18 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.addSettingTab(new VaultRagExplorerSettingTab(this.app, this));
 		console.log(`${LOG_PREFIX} settings tab registered`);
 
-		if (!this.settings.smartFolderPath.trim()) {
-			console.warn(`${LOG_PREFIX} smart folder is not configured`);
-			new Notice("Vault RAG Explorer: set the Smart folder in plugin settings before running queries.");
-		}
+		this.app.workspace.onLayoutReady(() => {
+			console.log(`${LOG_PREFIX} layout ready`);
+			if (!this.settings.smartFolderPath.trim()) {
+				console.warn(`${LOG_PREFIX} smartFolderPath is not configured — showing notice`);
+				new Notice(
+					"Vault RAG Explorer: set the Smart folder in Settings before running queries.",
+					8000
+				);
+			} else {
+				console.log(`${LOG_PREFIX} smartFolderPath configured:`, this.settings.smartFolderPath);
+			}
+		});
 
 		console.log(`${LOG_PREFIX} onload complete`);
 	}

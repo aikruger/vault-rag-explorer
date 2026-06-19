@@ -9,6 +9,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: VaultRagExplorerPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+		console.log("[VaultRagExplorerSettingTab] ✅ Real settings tab constructed — not SampleSettingTab");
 	}
 
 	display(): void {
