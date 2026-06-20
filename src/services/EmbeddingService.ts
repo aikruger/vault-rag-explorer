@@ -1,5 +1,6 @@
 import { Notice } from "obsidian";
 import { pipeline, env } from '@huggingface/transformers';
+import '@huggingface/transformers';
 
 const LOG_PREFIX = "[EmbeddingService]";
 
@@ -14,6 +15,14 @@ export class EmbeddingService {
 
     async embed(text: string): Promise<Float32Array> {
         console.log(`[EmbeddingService] embed() called, text.length=${text.length}`);
+
+        console.log('[EmbeddingService] Checking AutoTokenizer registry before pipeline init...');
+        try {
+            const { AutoTokenizer } = await import('@huggingface/transformers');
+            console.log('[EmbeddingService] AutoTokenizer available:', typeof AutoTokenizer);
+        } catch(e) {
+            console.error('[EmbeddingService] AutoTokenizer import failed — registry likely broken:', e);
+        }
 
         if (!this.pipelineInstance) {
             console.log('[EmbeddingService] Pipeline not yet loaded — loading transformers and initialising...');

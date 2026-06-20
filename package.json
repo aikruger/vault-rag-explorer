@@ -31,5 +31,8 @@
 		"@huggingface/transformers": "^3.8.1",
 		"cytoscape": "^3.34.0",
 		"sql.js": "^1.14.1"
-	}
+	},
+	"sideEffects": [
+		"./node_modules/@huggingface/transformers/**/*"
+	]
 }

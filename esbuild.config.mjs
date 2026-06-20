@@ -66,7 +66,10 @@ if (typeof globalThis.location === 'undefined') { globalThis.location = { href: 
 	target: 'es2020',
 	logLevel: 'info',
 	sourcemap: prod ? false : 'inline',
-	treeShaking: true,
+	// WARNING: do NOT set treeShaking: true — it strips the AutoTokenizer/AutoModel
+	// class registration side-effects inside @huggingface/transformers, causing
+	// "Cannot read properties of undefined (reading 'create')" at from_pretrained()
+	treeShaking: false,
 	outfile: 'main.js',
 	minify: prod,
 	loader: {
