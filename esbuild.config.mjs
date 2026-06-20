@@ -23,19 +23,18 @@ const copyWasmPlugin = {
 			} else {
 				console.error('[copy-wasm] sql-wasm.wasm NOT FOUND — DB will fail to load');
 			}
+			console.log('[build] Note: @huggingface/transformers ONNX WASM workers are served from CDN by default');
+			console.log('[build] Only sql-wasm.wasm requires manual copy — handled by copy-wasm plugin');
 		});
 	}
 };
 
 const context = await esbuild.context({
 	banner: {
-		js: banner + '\nvar importMetaUrl = require("url").pathToFileURL(__filename).href;\n',
+		js: banner,
 	},
 	entryPoints: ['src/main.ts'],
 	bundle: true,
-	define: {
-		'import.meta.url': 'importMetaUrl',
-	},
 	external: [
 		'obsidian',
 		'electron',
