@@ -116,7 +116,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} initialiseServices`, { smartFolderPath });
 
 		// Initialize Database
-		this.db = new Database(this.app, this.settings.indexDbPath);
+		this.db = new Database(this.app, this.settings.indexDbPath, this);
+		console.log(`${LOG_PREFIX} Database instance created with pluginDir from manifest`);
 		await this.db.init();
 
 		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
