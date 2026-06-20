@@ -19,30 +19,24 @@ export class EmbeddingService {
             console.log('[EmbeddingService] Pipeline not yet loaded — loading transformers and initialising...');
             new Notice('Loading embedding model for the first time — this may take up to a minute.');
 
-            // Configure env now — library is fully initialised at this point
+            // onnxruntime-node is active in Obsidian Electron — no WASM path config needed
+            // env.backends.onnx.wasm is only relevant for browser/onnxruntime-web builds
+            console.log('[EmbeddingService] Running in Electron Node context — onnxruntime-node backend, cpu device');
             env.allowRemoteModels = true;
             env.allowLocalModels  = true;
             env.cacheDir          = './.cache/huggingface';
 
-            if (env.backends?.onnx?.wasm) {
-                env.backends.onnx.wasm.wasmPaths  = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
-                env.backends.onnx.wasm.numThreads = 1;
-                env.backends.onnx.wasm.proxy      = false;
-                console.log('[EmbeddingService] ONNX WASM backend configured');
-            } else {
-                console.warn('[EmbeddingService] env.backends.onnx.wasm not available — relying on device:wasm option');
-            }
-
             try {
+                console.log(`[EmbeddingService] Initialising pipeline — device=cpu model=${this.modelName}`);
                 this.pipelineInstance = await pipeline('feature-extraction', this.modelName, {
-                    device: 'wasm',
+                    device: 'cpu',
                     dtype: 'fp32',
-                    session_options: { executionProviders: ['wasm'] },
                 });
-                console.log(`[EmbeddingService] Pipeline ready — model=${this.modelName}`);
+                console.log(`[EmbeddingService] Pipeline ready — device=cpu model=${this.modelName}`);
                 new Notice('Embedding model loaded successfully.');
             } catch (error) {
-                console.error('[EmbeddingService] Pipeline load failed:', error);
+                console.error('[EmbeddingService] Pipeline load failed on cpu device:', error);
+                console.error('[EmbeddingService] Available devices depend on onnxruntime build. In Obsidian Electron: cpu and dml (Windows DirectML) are supported. wasm is not available in Node context.');
                 new Notice('Embedding model failed to load. Check console for details.');
                 throw error;
             }
