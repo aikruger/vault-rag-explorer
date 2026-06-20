@@ -29,17 +29,20 @@ export class Database {
         try {
             console.log(`${LOG} Loading sql.js WASM from pluginDir`, this.pluginDir);
 
-            this.SQL = await initSqlJs({
-                locateFile: (file: string) => {
-                    // Resolve sql-wasm.wasm relative to the plugin folder
-                    // where main.js and sql-wasm.wasm were deployed together
-                    const resolved = path.join(this.pluginDir, file);
-                    console.log(`${LOG} locateFile: ${file} → ${resolved}`);
-                    return resolved;
-                },
-            });
+            const wasmPath = path.join(this.pluginDir, 'sql-wasm.wasm');
+            console.log(`${LOG} Reading WASM binary from`, wasmPath);
 
-            console.log(`${LOG} sql.js WASM loaded successfully`);
+            if (!fs.existsSync(wasmPath)) {
+                console.error(`${LOG} WASM file not found at`, wasmPath, '— was it copied during build?');
+                throw new Error(`sql-wasm.wasm not found at ${wasmPath}`);
+            }
+
+            const wasmBinary = fs.readFileSync(wasmPath);
+            console.log(`${LOG} WASM binary read, size=${wasmBinary.byteLength} bytes`);
+
+            // wasmBinary.buffer extracts the underlying ArrayBuffer
+            this.SQL = await initSqlJs({ wasmBinary: wasmBinary.buffer });
+            console.log(`${LOG} sql.js initialized successfully via wasmBinary`);
 
             const dbDir = path.dirname(this.dbPath);
             if (!fs.existsSync(dbDir)) {

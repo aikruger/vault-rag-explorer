@@ -9,7 +9,7 @@ export class EmbeddingService {
 
   constructor(modelName = "TaylorAI/bge-micro-v2") {
     console.log("[EmbeddingService] Module loaded — checking import.meta.url shim");
-    const globalAny = globalThis as any;
+    const globalAny = globalThis as { importMetaUrl?: unknown };
     console.log("[EmbeddingService] typeof importMetaUrl:", typeof globalAny.importMetaUrl);
     this.modelName = modelName;
     console.log(`[EmbeddingService] constructor called, model=${this.modelName}`);
