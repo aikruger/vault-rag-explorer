@@ -31,7 +31,16 @@ const copyWasmPlugin = {
 
 const context = await esbuild.context({
 	banner: {
-		js: banner,
+		js: banner + `
+// Obsidian Electron environment stubs for ONNX Runtime Web
+if (typeof globalThis.navigator === 'undefined') { globalThis.navigator = {}; }
+if (typeof globalThis.navigator.ml === 'undefined') { globalThis.navigator.ml = undefined; }
+if (typeof globalThis.location === 'undefined') { globalThis.location = { href: 'app://obsidian.md/' }; }
+`,
+	},
+	define: {
+		'import.meta.url': JSON.stringify('app://obsidian.md/plugin'),
+		'import.meta.env': JSON.stringify({ DEV: false }),
 	},
 	entryPoints: ['src/main.ts'],
 	bundle: true,
@@ -51,8 +60,9 @@ const context = await esbuild.context({
 		'@lezer/lr',
 		...builtinModules,
 	],
-	format: 'cjs',
-	target: 'es2021',
+	format: 'iife',
+	globalName: 'VaultRagExplorer',
+	target: 'es2018',
 	logLevel: 'info',
 	sourcemap: prod ? false : 'inline',
 	treeShaking: true,

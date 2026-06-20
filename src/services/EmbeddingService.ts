@@ -7,28 +7,28 @@ export class EmbeddingService {
   private modelName: string;
   private pipelineInstance: unknown = null;
 
-  constructor(modelName = "TaylorAI/bge-micro-v2") {
+  constructor(modelName = 'TaylorAI/bge-micro-v2') {
     console.log('[EmbeddingService] Using @huggingface/transformers v3');
-    console.log('[EmbeddingService] Configuring @huggingface/transformers env for Obsidian/Electron');
 
-    // Use local filesystem cache inside the plugin data directory
-    // Do NOT use remote CDN fetching — Obsidian may block outbound fetch in renderer
-    env.cacheDir = './.cache/huggingface'; // will be resolved relative to process.cwd()
-
-    // Disable remote model fetching for now — models must be cached locally
-    // Set to true only if you want first-run download
-    env.allowRemoteModels = true;
-    env.allowLocalModels = true;
-
-    // Force WASM backend — avoids broken WebGPU/CUDA backend detection in Obsidian
-    if (env.backends.onnx.wasm) {
+    // Explicitly override ONNX WASM paths to use the CDN version
+    // This prevents the undefined .create error caused by broken
+    // local WASM path resolution in Obsidian's Electron renderer
+    if (env.backends?.onnx?.wasm) {
+        env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
         env.backends.onnx.wasm.numThreads = 1;
+        env.backends.onnx.wasm.proxy = false;
+    } else {
+        console.warn('[EmbeddingService] env.backends.onnx.wasm not yet available — will configure at pipeline init');
     }
 
+    env.allowRemoteModels = true;
+    env.allowLocalModels = true;
+    env.cacheDir = './.cache/huggingface';
+
     console.log('[EmbeddingService] env configured:', {
-        cacheDir: env.cacheDir,
+        wasmPaths: env.backends.onnx?.wasm?.wasmPaths,
+        numThreads: env.backends.onnx?.wasm?.numThreads,
         allowRemoteModels: env.allowRemoteModels,
-        allowLocalModels: env.allowLocalModels,
     });
 
     this.modelName = modelName;
@@ -44,16 +44,17 @@ export class EmbeddingService {
         console.log('[EmbeddingService] First-run model download may be in progress. Model will be cached after this.');
 
         try {
-            // pipeline() signature unchanged in v3, but backend now auto-selects correctly
             this.pipelineInstance = await pipeline('feature-extraction', this.modelName, {
-                // Explicitly request WASM backend to avoid GPU backend errors in Obsidian
-                device: 'wasm',
+                device: 'wasm',      // force WASM, never attempt WebGPU or WebNN
                 dtype: 'fp32',
+                session_options: {
+                    executionProviders: ['wasm'],
+                },
             });
             console.log(`[EmbeddingService] Pipeline ready — model=${this.modelName}`);
         } catch (error) {
-            console.error('[EmbeddingService] Pipeline load failed:', error);
-            new Notice(`Embedding model failed to load: ${String(error)}`);
+            console.error('[EmbeddingService] Pipeline load failed — @huggingface/transformers ONNX WASM init error in Obsidian Electron:', error);
+            new Notice(`Embedding model failed to load. Check console for details.`);
             throw error;
         }
     }
