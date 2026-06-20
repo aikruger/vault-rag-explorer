@@ -1,4 +1,3 @@
-import { pipeline, env } from "@huggingface/transformers";
 import { Notice } from "obsidian";
 
 const LOG_PREFIX = "[EmbeddingService]";
@@ -8,58 +7,52 @@ export class EmbeddingService {
     private pipelineInstance: unknown = null;
 
     constructor(modelName = 'TaylorAI/bge-micro-v2') {
-        // Do NOT access env.backends here — the library may not be
-        // fully initialised yet when the constructor runs synchronously.
-        // All env configuration is deferred to the first embed() call.
         this.modelName = modelName;
         console.log(`[EmbeddingService] constructor — model=${this.modelName} (env config deferred)`);
     }
 
-    private configureEnv(): void {
-        console.log('[EmbeddingService] configureEnv() — applying @huggingface/transformers env settings');
+    private async loadTransformers(): Promise<{ pipeline: Function; env: any }> {
+        // Dynamic require avoids ESM/CJS bundling conflict
+        // The package must be present in node_modules at runtime
 
-        env.allowRemoteModels = true;
-        env.allowLocalModels  = true;
-        env.cacheDir          = './.cache/huggingface';
-
-        // Guard every level — env.backends.onnx.wasm may be undefined
-        // depending on the library init order in Obsidian's Electron renderer
-        if (env.backends?.onnx?.wasm) {
-            env.backends.onnx.wasm.wasmPaths  = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
-            env.backends.onnx.wasm.numThreads = 1;
-            env.backends.onnx.wasm.proxy      = false;
-            console.log('[EmbeddingService] ONNX WASM backend configured');
-        } else {
-            console.warn('[EmbeddingService] env.backends.onnx.wasm not available — ' +
-                         'library may self-configure; pipeline device forced to wasm in options');
-        }
-
-        console.log('[EmbeddingService] env configured:', {
-            allowRemoteModels: env.allowRemoteModels,
-            cacheDir:          env.cacheDir,
-        });
+        return require('@huggingface/transformers');
     }
 
     async embed(text: string): Promise<Float32Array> {
         console.log(`[EmbeddingService] embed() called, text.length=${text.length}`);
 
         if (!this.pipelineInstance) {
-            console.log('[EmbeddingService] Pipeline not yet loaded — initialising...');
+            console.log('[EmbeddingService] Pipeline not yet loaded — loading transformers and initialising...');
             new Notice('Loading embedding model for the first time — this may take up to a minute.');
 
-            // Configure env here, not in constructor
-            this.configureEnv();
+            const { pipeline, env } = await this.loadTransformers();
+            console.log('[EmbeddingService] @huggingface/transformers loaded dynamically');
+
+            // Configure env now — library is fully initialised at this point
+            env.allowRemoteModels = true;
+            env.allowLocalModels  = true;
+            env.cacheDir          = './.cache/huggingface';
+
+            if (env.backends?.onnx?.wasm) {
+                env.backends.onnx.wasm.wasmPaths  = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
+                env.backends.onnx.wasm.numThreads = 1;
+                env.backends.onnx.wasm.proxy      = false;
+                console.log('[EmbeddingService] ONNX WASM backend configured');
+            } else {
+                console.warn('[EmbeddingService] env.backends.onnx.wasm not available — relying on device:wasm option');
+            }
 
             try {
                 this.pipelineInstance = await pipeline('feature-extraction', this.modelName, {
                     device: 'wasm',
-                    dtype:  'fp32',
+                    dtype: 'fp32',
+                    session_options: { executionProviders: ['wasm'] },
                 });
                 console.log(`[EmbeddingService] Pipeline ready — model=${this.modelName}`);
                 new Notice('Embedding model loaded successfully.');
             } catch (error) {
-                console.error('[EmbeddingService] Pipeline load failed — ONNX WASM init error:', error);
-                new Notice(`Embedding model failed to load. Check console for details.`);
+                console.error('[EmbeddingService] Pipeline load failed:', error);
+                new Notice('Embedding model failed to load. Check console for details.');
                 throw error;
             }
         }
