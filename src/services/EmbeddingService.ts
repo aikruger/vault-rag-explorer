@@ -8,20 +8,25 @@ export class EmbeddingService {
   private pipelineInstance: unknown = null;
 
   constructor(modelName = "TaylorAI/bge-micro-v2") {
-    console.log("[EmbeddingService] Module loaded OK");
+    console.log("[EmbeddingService] Module loaded — checking import.meta.url shim");
+    const globalAny = globalThis as any;
+    console.log("[EmbeddingService] typeof importMetaUrl:", typeof globalAny.importMetaUrl);
     this.modelName = modelName;
     console.log(`[EmbeddingService] constructor called, model=${this.modelName}`);
   }
 
   async embed(text: string): Promise<Float32Array> {
+    console.log(`${LOG_PREFIX} embed() called, text length=${text.length}`);
+
     if (!this.pipelineInstance) {
-      new Notice('Downloading embedding model on first use, please wait…');
-      console.log(`${LOG_PREFIX} Loading pipeline for model ${this.modelName}`);
+      console.log(`${LOG_PREFIX} Pipeline not yet loaded, initialising...`);
+      new Notice('Loading embedding model for first use, please wait…');
       try {
         this.pipelineInstance = await pipeline("feature-extraction", this.modelName);
-        console.log(`[EmbeddingService] pipeline ready for model ${this.modelName}`);
+        console.log(`${LOG_PREFIX} Pipeline ready for model ${this.modelName}`);
       } catch (error) {
-        console.error(`${LOG_PREFIX} embed failed: ${error}`);
+        console.error(`${LOG_PREFIX} Pipeline load failed — @xenova/transformers may not be compatible in this Obsidian version:`, error);
+        new Notice(`Embedding model failed to load: ${String(error)}. Check console for details.`);
         throw error;
       }
     }

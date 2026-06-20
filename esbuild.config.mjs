@@ -12,10 +12,13 @@ const prod = process.argv[2] === 'production';
 
 const context = await esbuild.context({
 	banner: {
-		js: banner,
+		js: banner + '\nvar importMetaUrl = require("url").pathToFileURL(__filename).href;\n',
 	},
 	entryPoints: ['src/main.ts'],
 	bundle: true,
+	define: {
+		'import.meta.url': 'importMetaUrl',
+	},
 	external: [
 		'obsidian',
 		'electron',
