@@ -47,7 +47,6 @@ if (typeof globalThis.location === 'undefined') { globalThis.location = { href: 
 	external: [
 		'obsidian',
 		'electron',
-		'@huggingface/transformers',
 		'@codemirror/autocomplete',
 		'@codemirror/collab',
 		'@codemirror/commands',
@@ -61,6 +60,8 @@ if (typeof globalThis.location === 'undefined') { globalThis.location = { href: 
 		'@lezer/lr',
 		...builtinModules,
 	],
+	conditions: ['require', 'default'],
+	mainFields: ['main', 'module'],
 	format: 'cjs',
 	target: 'es2020',
 	logLevel: 'info',

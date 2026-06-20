@@ -1,4 +1,5 @@
 import { Notice } from "obsidian";
+import { pipeline, env } from '@huggingface/transformers';
 
 const LOG_PREFIX = "[EmbeddingService]";
 
@@ -11,22 +12,12 @@ export class EmbeddingService {
         console.log(`[EmbeddingService] constructor — model=${this.modelName} (env config deferred)`);
     }
 
-    private async loadTransformers(): Promise<{ pipeline: Function; env: any }> {
-        // Dynamic require avoids ESM/CJS bundling conflict
-        // The package must be present in node_modules at runtime
-
-        return require('@huggingface/transformers');
-    }
-
     async embed(text: string): Promise<Float32Array> {
         console.log(`[EmbeddingService] embed() called, text.length=${text.length}`);
 
         if (!this.pipelineInstance) {
             console.log('[EmbeddingService] Pipeline not yet loaded — loading transformers and initialising...');
             new Notice('Loading embedding model for the first time — this may take up to a minute.');
-
-            const { pipeline, env } = await this.loadTransformers();
-            console.log('[EmbeddingService] @huggingface/transformers loaded dynamically');
 
             // Configure env now — library is fully initialised at this point
             env.allowRemoteModels = true;
