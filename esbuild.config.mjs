@@ -30,7 +30,6 @@ const context = await esbuild.context({
 		'@lezer/common',
 		'@lezer/highlight',
 		'@lezer/lr',
-		'better-sqlite3',
 		...builtinModules,
 	],
 	format: 'cjs',
@@ -40,6 +39,9 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: 'main.js',
 	minify: prod,
+	loader: {
+		'.wasm': 'file',
+	},
 });
 
 if (prod) {

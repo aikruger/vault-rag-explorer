@@ -553,18 +553,32 @@ export class VaultRagExplorerView extends ItemView {
 
 	private getOutlinksForPath(path: string): string[] {
 		const rawDb = this.plugin.db.getDb();
-		const rows = rawDb.prepare(`
-			SELECT dst_path FROM wikilinks WHERE src_source_id = (SELECT id FROM sources WHERE path = ?)
-		`).all(path) as { dst_path: string }[];
-		return rows.map(r => r.dst_path);
+		const stmt = rawDb.prepare(`
+			SELECT dst_path FROM wikilinks WHERE src_source_id = (SELECT id FROM sources WHERE path = $path)
+		`);
+		stmt.bind({ $path: path });
+		const results: string[] = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as { dst_path: string };
+			results.push(row.dst_path);
+		}
+		stmt.free();
+		return results;
 	}
 
 	private getSourceIdForPath(path: string): number | null {
 		const rawDb = this.plugin.db.getDb();
-		const row = rawDb.prepare(`
-			SELECT id FROM sources WHERE path = ?
-		`).get(path) as { id: number } | undefined;
-		return row ? row.id : null;
+		const stmt = rawDb.prepare(`
+			SELECT id FROM sources WHERE path = $path
+		`);
+		stmt.bind({ $path: path });
+		let result: number | null = null;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as { id: number };
+			result = row.id;
+		}
+		stmt.free();
+		return result;
 	}
 
 	private renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): void {

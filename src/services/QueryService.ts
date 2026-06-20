@@ -91,14 +91,14 @@ export class QueryService {
 
     // 5. Look up details from DB
     const rawDb = this.db.getDb();
-    const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = ?`);
-    const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path FROM blocks WHERE id = ?`);
+    const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = $id`);
+    const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path FROM blocks WHERE id = $id`);
 
     // Milestone 6 wikilink boost calculation
     const lockedPaths = new Set<string>();
-    const lnService = this.lockedNodesService as any;
+    const lnService = this.lockedNodesService as { getAll: () => { path: string }[] };
     if (lnService && typeof lnService.getAll === "function") {
-      const lockedNodes = lnService.getAll() as { path: string }[];
+      const lockedNodes = lnService.getAll();
       for (const ln of lockedNodes) {
         lockedPaths.add(ln.path);
       }
@@ -110,25 +110,36 @@ export class QueryService {
       const selectOutlinks = rawDb.prepare(`
         SELECT dst_path FROM wikilinks w
         JOIN sources s ON s.id = w.src_source_id
-        WHERE s.path = ?
+        WHERE s.path = $path
       `);
       for (const lp of lockedPaths) {
-        const rows = selectOutlinks.all(lp) as { dst_path: string }[];
-        for (const r of rows) {
-          boostedPaths.add(r.dst_path);
+        selectOutlinks.bind({ $path: lp });
+        while (selectOutlinks.step()) {
+           const r = selectOutlinks.getAsObject() as { dst_path: string };
+           boostedPaths.add(r.dst_path);
         }
+        selectOutlinks.reset();
       }
+      selectOutlinks.free();
     }
 
     // Add wikilink boost to score
     const finalScoredEmbeddings = scoredEmbeddings.map(emb => {
       let path = "";
       if (emb.ownerType === "source") {
-         const row = selectSource.get(emb.ownerId) as { path: string } | undefined;
-         if (row) path = row.path;
+         selectSource.bind({ $id: emb.ownerId });
+         if (selectSource.step()) {
+           const row = selectSource.getAsObject() as { path: string };
+           path = row.path;
+         }
+         selectSource.reset();
       } else {
-         const row = selectBlock.get(emb.ownerId) as { block_path: string } | undefined;
-         if (row) path = row.block_path;
+         selectBlock.bind({ $id: emb.ownerId });
+         if (selectBlock.step()) {
+           const row = selectBlock.getAsObject() as { block_path: string };
+           path = row.block_path;
+         }
+         selectBlock.reset();
       }
 
       const boost = boostedPaths.has(path) ? 0.05 : 0;
@@ -141,10 +152,13 @@ export class QueryService {
 
     const hits: RetrievalHit[] = [];
 
+    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
+
     for (const emb of topEmbeddings) {
       if (emb.ownerType === "source") {
-        const row = selectSource.get(emb.ownerId) as { path: string; title: string } | undefined;
-        if (row) {
+        selectSource.bind({ $id: emb.ownerId });
+        if (selectSource.step()) {
+          const row = selectSource.getAsObject() as { path: string; title: string };
           hits.push({
             nodeType: "note",
             nodeId: emb.ownerId,
@@ -158,10 +172,18 @@ export class QueryService {
             reasons: ["High semantic similarity", ...(emb.wikilinkBoost > 0 ? ["Linked to locked context"] : [])]
           });
         }
+        selectSource.reset();
       } else if (emb.ownerType === "block") {
-        const row = selectBlock.get(emb.ownerId) as { block_key: string; block_label: string; text: string; block_path: string } | undefined;
-        if (row) {
-          const srcRow = rawDb.prepare(`SELECT id FROM sources WHERE path = ?`).get(row.block_path) as { id: number } | undefined;
+        selectBlock.bind({ $id: emb.ownerId });
+        if (selectBlock.step()) {
+          const row = selectBlock.getAsObject() as { block_key: string; block_label: string; text: string; block_path: string };
+
+          selectSourceIdByPath.bind({ $path: row.block_path });
+          let srcRow: { id: number } | undefined;
+          if (selectSourceIdByPath.step()) {
+            srcRow = selectSourceIdByPath.getAsObject() as { id: number };
+          }
+          selectSourceIdByPath.reset();
 
           hits.push({
             nodeType: "block",
@@ -177,8 +199,13 @@ export class QueryService {
             reasons: ["High semantic similarity at block level", ...(emb.wikilinkBoost > 0 ? ["Parent note linked to locked context"] : [])]
           });
         }
+        selectBlock.reset();
       }
     }
+
+    selectSource.free();
+    selectBlock.free();
+    selectSourceIdByPath.free();
 
     return hits;
   }

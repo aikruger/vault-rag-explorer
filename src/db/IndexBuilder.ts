@@ -1,4 +1,4 @@
-import type { Database as BetterSqlite3 } from "better-sqlite3";
+import type { Database as SqlJsDatabase } from "sql.js";
 import type { Database } from "./Database";
 import type {
   ParsedSource,
@@ -65,18 +65,19 @@ export class IndexBuilder {
     }
 
     // Apply performance pragmas for the write session
-    rawDb.pragma("journal_mode = WAL");
-    rawDb.pragma("synchronous = NORMAL");
-    rawDb.pragma("temp_store = MEMORY");
+    rawDb.exec("PRAGMA journal_mode = WAL;");
+    rawDb.exec("PRAGMA synchronous = NORMAL;");
+    rawDb.exec("PRAGMA temp_store = MEMORY;");
     console.log(`${LOG_PREFIX} Applied WAL pragmas`);
 
     // --- Sources ---
-    await this.upsertSources(rawDb, sources, forceRebuild, result);
+    this.upsertSources(rawDb, sources, forceRebuild, result);
 
     // --- Blocks ---
-    await this.upsertBlocks(rawDb, blocks, forceRebuild, result);
+    this.upsertBlocks(rawDb, blocks, forceRebuild, result);
 
     result.durationMs = Date.now() - startTime;
+    this.db.persist();
 
     console.log(`${LOG_PREFIX} buildIndex complete`, {
       sourcesInserted: result.sourcesInserted,
@@ -99,31 +100,31 @@ export class IndexBuilder {
   // ---------------------------------------------------------------------------
 
   private upsertSources(
-    rawDb: BetterSqlite3,
+    rawDb: SqlJsDatabase,
     sources: ParsedSource[],
     forceRebuild: boolean,
     result: IndexBuildResult
   ): void {
     console.log(`${LOG_PREFIX} Upserting ${sources.length} sources in batches of ${BATCH_SIZE}`);
 
-    const selectHash = rawDb.prepare<[string], { hash: string | null }>(
-      "SELECT hash FROM sources WHERE path = ?"
+    const selectHash = rawDb.prepare(
+      "SELECT hash FROM sources WHERE path = $path"
     );
 
     const insertSource = rawDb.prepare(`
       INSERT INTO sources (path, title, metadata_json, raw_json, mtime, hash)
-      VALUES (@path, @title, @metadata_json, @raw_json, @mtime, @hash)
+      VALUES ($path, $title, $metadata_json, $raw_json, $mtime, $hash)
     `);
 
     const updateSource = rawDb.prepare(`
       UPDATE sources
-      SET title = @title, metadata_json = @metadata_json, raw_json = @raw_json,
-          mtime = @mtime, hash = @hash
-      WHERE path = @path
+      SET title = $title, metadata_json = $metadata_json, raw_json = $raw_json,
+          mtime = $mtime, hash = $hash
+      WHERE path = $path
     `);
 
-    const selectSourceId = rawDb.prepare<[string], { id: number }>(
-      "SELECT id FROM sources WHERE path = ?"
+    const selectSourceId = rawDb.prepare(
+      "SELECT id FROM sources WHERE path = $path"
     );
 
     for (let batchStart = 0; batchStart < sources.length; batchStart += BATCH_SIZE) {
@@ -132,61 +133,74 @@ export class IndexBuilder {
         `${LOG_PREFIX} Sources batch ${batchStart + 1}-${batchStart + batch.length} of ${sources.length}`
       );
 
-      const writeBatch = rawDb.transaction(() => {
-        for (const source of batch) {
-          try {
-            const existing = selectHash.get(source.path);
-
-            if (!forceRebuild && existing && existing.hash === source.hash && source.hash !== "") {
-              result.sourcesSkipped++;
-              if (this.enableDebugLogging) {
-                console.log(`${LOG_PREFIX} Source unchanged, skipping: ${source.path}`);
-              }
-              continue;
-            }
-
-            const row = {
-              path: source.path,
-              title: source.title,
-              metadata_json: JSON.stringify(source.metadata),
-              raw_json: source.rawJson,
-              mtime: source.mtime,
-              hash: source.hash,
-            };
-
-            if (!existing) {
-              insertSource.run(row);
-              result.sourcesInserted++;
-              console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
-            } else {
-              updateSource.run(row);
-              result.sourcesUpdated++;
-              console.log(`${LOG_PREFIX} Updated source: ${source.path}`);
-            }
-
-            // Write embeddings
-            const idRow = selectSourceId.get(source.path);
-            if (idRow) {
-              const embCount = this.upsertEmbeddings(rawDb, "source", idRow.id, source.embeddings);
-              result.embeddingsWritten += embCount;
-            }
-
-            // Write wikilinks
-            const srcIdRow = selectSourceId.get(source.path);
-            if (srcIdRow) {
-              const wlCount = this.upsertWikilinks(rawDb, srcIdRow.id, source.outlinks);
-              result.wikilinksWritten += wlCount;
-            }
-          } catch (e) {
-            const msg = `Error upserting source ${source.path}: ${String(e)}`;
-            console.error(`${LOG_PREFIX} ${msg}`);
-            result.errors.push(msg);
+      rawDb.exec("BEGIN TRANSACTION;");
+      for (const source of batch) {
+        try {
+          console.log(`[IndexBuilder] Upserting source`, source.path);
+          selectHash.bind({ $path: source.path });
+          let existing: { hash: string | null } | undefined;
+          if (selectHash.step()) {
+             existing = selectHash.getAsObject() as { hash: string | null };
           }
-        }
-      });
+          selectHash.reset();
 
-      writeBatch();
+          if (!forceRebuild && existing && existing.hash === source.hash && source.hash !== "") {
+            result.sourcesSkipped++;
+            if (this.enableDebugLogging) {
+              console.log(`${LOG_PREFIX} Source unchanged, skipping: ${source.path}`);
+            }
+            continue;
+          }
+
+          const rowParams = {
+            $path: source.path,
+            $title: source.title,
+            $metadata_json: JSON.stringify(source.metadata),
+            $raw_json: source.rawJson,
+            $mtime: source.mtime,
+            $hash: source.hash,
+          };
+
+          if (!existing) {
+            insertSource.run(rowParams);
+            result.sourcesInserted++;
+            console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
+          } else {
+            updateSource.run(rowParams);
+            result.sourcesUpdated++;
+            console.log(`${LOG_PREFIX} Updated source: ${source.path}`);
+          }
+
+          // Write embeddings
+          selectSourceId.bind({ $path: source.path });
+          if (selectSourceId.step()) {
+            const idRow = selectSourceId.getAsObject() as { id: number };
+            const embCount = this.upsertEmbeddings(rawDb, "source", idRow.id, source.embeddings);
+            result.embeddingsWritten += embCount;
+          }
+          selectSourceId.reset();
+
+          // Write wikilinks
+          selectSourceId.bind({ $path: source.path });
+          if (selectSourceId.step()) {
+             const srcIdRow = selectSourceId.getAsObject() as { id: number };
+             const wlCount = this.upsertWikilinks(rawDb, srcIdRow.id, source.outlinks);
+             result.wikilinksWritten += wlCount;
+          }
+          selectSourceId.reset();
+        } catch (e) {
+          const msg = `Error upserting source ${source.path}: ${String(e)}`;
+          console.error(`${LOG_PREFIX} ${msg}`);
+          result.errors.push(msg);
+        }
+      }
+      rawDb.exec("COMMIT;");
     }
+
+    selectHash.free();
+    insertSource.free();
+    updateSource.free();
+    selectSourceId.free();
   }
 
   // ---------------------------------------------------------------------------
@@ -194,19 +208,23 @@ export class IndexBuilder {
   // ---------------------------------------------------------------------------
 
   private upsertBlocks(
-    rawDb: BetterSqlite3,
+    rawDb: SqlJsDatabase,
     blocks: ParsedBlock[],
     forceRebuild: boolean,
     result: IndexBuildResult
   ): void {
     console.log(`${LOG_PREFIX} Upserting ${blocks.length} blocks in batches of ${BATCH_SIZE}`);
 
-    const selectBlockHash = rawDb.prepare<[string], { id: number; hash: string | null }>(
-      "SELECT id, hash FROM blocks WHERE block_key = ?"
+    const selectBlockHash = rawDb.prepare(
+      "SELECT id, hash FROM blocks WHERE block_key = $block_key"
     );
 
-    const selectSourceId = rawDb.prepare<[string], { id: number }>(
-      "SELECT id FROM sources WHERE path = ?"
+    const selectSourceId = rawDb.prepare(
+      "SELECT id FROM sources WHERE path = $path"
+    );
+
+    const selectStoredHashRow = rawDb.prepare(
+      "SELECT raw_json FROM blocks WHERE block_key = $block_key"
     );
 
     const insertBlock = rawDb.prepare(`
@@ -214,20 +232,20 @@ export class IndexBuilder {
         (source_id, block_key, block_path, block_label, line_start, line_end,
          text, text_length, metadata_json, raw_json)
       VALUES
-        (@source_id, @block_key, @block_path, @block_label, @line_start, @line_end,
-         @text, @text_length, @metadata_json, @raw_json)
+        ($source_id, $block_key, $block_path, $block_label, $line_start, $line_end,
+         $text, $text_length, $metadata_json, $raw_json)
     `);
 
     const updateBlock = rawDb.prepare(`
       UPDATE blocks
-      SET source_id = @source_id, block_path = @block_path, block_label = @block_label,
-          line_start = @line_start, line_end = @line_end, text = @text,
-          text_length = @text_length, metadata_json = @metadata_json, raw_json = @raw_json
-      WHERE block_key = @block_key
+      SET source_id = $source_id, block_path = $block_path, block_label = $block_label,
+          line_start = $line_start, line_end = $line_end, text = $text,
+          text_length = $text_length, metadata_json = $metadata_json, raw_json = $raw_json
+      WHERE block_key = $block_key
     `);
 
-    const selectBlockId = rawDb.prepare<[string], { id: number }>(
-      "SELECT id FROM blocks WHERE block_key = ?"
+    const selectBlockId = rawDb.prepare(
+      "SELECT id FROM blocks WHERE block_key = $block_key"
     );
 
     for (let batchStart = 0; batchStart < blocks.length; batchStart += BATCH_SIZE) {
@@ -236,84 +254,105 @@ export class IndexBuilder {
         `${LOG_PREFIX} Blocks batch ${batchStart + 1}-${batchStart + batch.length} of ${blocks.length}`
       );
 
-      const writeBatch = rawDb.transaction(() => {
-        for (const block of batch) {
-          try {
-            // Resolve parent source_id — required FK
-            const srcRow = selectSourceId.get(block.blockPath);
-            if (!srcRow) {
-              const msg = `Block ${block.blockKey}: parent source not found for path=${block.blockPath} — skipping`;
-              console.warn(`${LOG_PREFIX} ${msg}`);
-              result.blocksSkipped++;
-              result.errors.push(msg);
-              continue;
-            }
-
-            const existing = selectBlockHash.get(block.blockKey);
-
-            const storedHashRow = rawDb.prepare(
-              "SELECT raw_json FROM blocks WHERE block_key = ?"
-            ).get(block.blockKey) as { raw_json: string } | undefined;
-
-            if (!forceRebuild && storedHashRow) {
-              try {
-                const storedRaw = JSON.parse(storedHashRow.raw_json);
-                const storedEmbedHash = storedRaw?.last_embed?.hash ?? '';
-                if (storedEmbedHash === block.embedHash && block.embedHash !== '') {
-                  result.blocksSkipped++;
-                  if (this.enableDebugLogging) {
-                    console.log(`${LOG_PREFIX} Block embed hash unchanged, skipping: ${block.blockKey}`);
-                  }
-                  continue;
-                }
-              } catch (e) {
-                console.warn(`${LOG_PREFIX} Could not parse raw_json for hash check: ${block.blockKey}`, e);
-              }
-            }
-
-            const row = {
-              source_id: srcRow.id,
-              block_key: block.blockKey,
-              block_path: block.blockPath,
-              block_label: block.blockLabel,
-              line_start: block.lineStart,
-              line_end: block.lineEnd,
-              text: block.text,
-              text_length: block.textLength,
-              metadata_json: JSON.stringify(block.metadata),
-              raw_json: block.rawJson,
-            };
-
-            if (!existing) {
-              insertBlock.run(row);
-              result.blocksInserted++;
-              if (this.enableDebugLogging) {
-                console.log(`${LOG_PREFIX} Inserted block: ${block.blockKey}`);
-              }
-            } else {
-              updateBlock.run(row);
-              result.blocksUpdated++;
-              if (this.enableDebugLogging) {
-                console.log(`${LOG_PREFIX} Updated block: ${block.blockKey}`);
-              }
-            }
-
-            // Write embeddings
-            const blockIdRow = selectBlockId.get(block.blockKey);
-            if (blockIdRow) {
-              const embCount = this.upsertEmbeddings(rawDb, "block", blockIdRow.id, block.embeddings);
-              result.embeddingsWritten += embCount;
-            }
-          } catch (e) {
-            const msg = `Error upserting block ${block.blockKey}: ${String(e)}`;
-            console.error(`${LOG_PREFIX} ${msg}`);
-            result.errors.push(msg);
+      rawDb.exec("BEGIN TRANSACTION;");
+      for (const block of batch) {
+        try {
+          // Resolve parent source_id — required FK
+          selectSourceId.bind({ $path: block.blockPath });
+          let srcRow: { id: number } | undefined;
+          if (selectSourceId.step()) {
+            srcRow = selectSourceId.getAsObject() as { id: number };
           }
-        }
-      });
+          selectSourceId.reset();
 
-      writeBatch();
+          if (!srcRow) {
+            const msg = `Block ${block.blockKey}: parent source not found for path=${block.blockPath} — skipping`;
+            console.warn(`${LOG_PREFIX} ${msg}`);
+            result.blocksSkipped++;
+            result.errors.push(msg);
+            continue;
+          }
+
+          selectBlockHash.bind({ $block_key: block.blockKey });
+          let existing: { id: number; hash: string | null } | undefined;
+          if (selectBlockHash.step()) {
+            existing = selectBlockHash.getAsObject() as { id: number; hash: string | null };
+          }
+          selectBlockHash.reset();
+
+          selectStoredHashRow.bind({ $block_key: block.blockKey });
+          let storedHashRow: { raw_json: string } | undefined;
+          if (selectStoredHashRow.step()) {
+            storedHashRow = selectStoredHashRow.getAsObject() as { raw_json: string };
+          }
+          selectStoredHashRow.reset();
+
+          if (!forceRebuild && storedHashRow) {
+            try {
+              const storedRaw = JSON.parse(storedHashRow.raw_json);
+              const storedEmbedHash = storedRaw?.last_embed?.hash ?? '';
+              if (storedEmbedHash === block.embedHash && block.embedHash !== '') {
+                result.blocksSkipped++;
+                if (this.enableDebugLogging) {
+                  console.log(`${LOG_PREFIX} Block embed hash unchanged, skipping: ${block.blockKey}`);
+                }
+                continue;
+              }
+            } catch (e) {
+              console.warn(`${LOG_PREFIX} Could not parse raw_json for hash check: ${block.blockKey}`, e);
+            }
+          }
+
+          const rowParams = {
+            $source_id: srcRow.id,
+            $block_key: block.blockKey,
+            $block_path: block.blockPath,
+            $block_label: block.blockLabel,
+            $line_start: block.lineStart,
+            $line_end: block.lineEnd,
+            $text: block.text,
+            $text_length: block.textLength,
+            $metadata_json: JSON.stringify(block.metadata),
+            $raw_json: block.rawJson,
+          };
+
+          if (!existing) {
+            insertBlock.run(rowParams);
+            result.blocksInserted++;
+            if (this.enableDebugLogging) {
+              console.log(`${LOG_PREFIX} Inserted block: ${block.blockKey}`);
+            }
+          } else {
+            updateBlock.run(rowParams);
+            result.blocksUpdated++;
+            if (this.enableDebugLogging) {
+              console.log(`${LOG_PREFIX} Updated block: ${block.blockKey}`);
+            }
+          }
+
+          // Write embeddings
+          selectBlockId.bind({ $block_key: block.blockKey });
+          if (selectBlockId.step()) {
+            const blockIdRow = selectBlockId.getAsObject() as { id: number };
+            const embCount = this.upsertEmbeddings(rawDb, "block", blockIdRow.id, block.embeddings);
+            result.embeddingsWritten += embCount;
+          }
+          selectBlockId.reset();
+        } catch (e) {
+          const msg = `Error upserting block ${block.blockKey}: ${String(e)}`;
+          console.error(`${LOG_PREFIX} ${msg}`);
+          result.errors.push(msg);
+        }
+      }
+      rawDb.exec("COMMIT;");
     }
+
+    selectBlockHash.free();
+    selectSourceId.free();
+    selectStoredHashRow.free();
+    insertBlock.free();
+    updateBlock.free();
+    selectBlockId.free();
   }
 
   // ---------------------------------------------------------------------------
@@ -325,7 +364,7 @@ export class IndexBuilder {
    * Returns the number of embedding rows written.
    */
   private upsertEmbeddings(
-    rawDb: BetterSqlite3,
+    rawDb: SqlJsDatabase,
     ownerType: "source" | "block",
     ownerId: number,
     embeddings: ParsedEmbedding[]
@@ -336,7 +375,7 @@ export class IndexBuilder {
       INSERT INTO embeddings
         (owner_type, owner_id, model_name, dim, dtype, norm, is_normalized, embedding)
       VALUES
-        (@owner_type, @owner_id, @model_name, @dim, @dtype, @norm, @is_normalized, @embedding)
+        ($owner_type, $owner_id, $model_name, $dim, $dtype, $norm, $is_normalized, $embedding)
       ON CONFLICT(owner_type, owner_id, model_name) DO UPDATE SET
         dim          = excluded.dim,
         dtype        = excluded.dtype,
@@ -351,14 +390,14 @@ export class IndexBuilder {
         const { blob, norm, isNormalized } = this.packEmbedding(emb.vec);
 
         upsertEmb.run({
-          owner_type: ownerType,
-          owner_id: ownerId,
-          model_name: emb.modelName,
-          dim: emb.dim,
-          dtype: "float32",
-          norm,
-          is_normalized: isNormalized ? 1 : 0,
-          embedding: blob,
+          $owner_type: ownerType,
+          $owner_id: ownerId,
+          $model_name: emb.modelName,
+          $dim: emb.dim,
+          $dtype: "float32",
+          $norm: norm,
+          $is_normalized: isNormalized ? 1 : 0,
+          $embedding: blob,
         });
 
         written++;
@@ -375,6 +414,8 @@ export class IndexBuilder {
       }
     }
 
+    upsertEmb.free();
+
     return written;
   }
 
@@ -383,35 +424,41 @@ export class IndexBuilder {
   // ---------------------------------------------------------------------------
 
   private upsertWikilinks(
-    rawDb: BetterSqlite3,
+    rawDb: SqlJsDatabase,
     srcSourceId: number,
     outlinks: string[]
   ): number {
     if (outlinks.length === 0) return 0;
 
     // Delete existing wikilinks for this source to replace with fresh set
-    rawDb.prepare("DELETE FROM wikilinks WHERE src_source_id = ?").run(srcSourceId);
+    rawDb.exec(`DELETE FROM wikilinks WHERE src_source_id = ${srcSourceId}`);
 
     const insertWikilink = rawDb.prepare(`
       INSERT INTO wikilinks (src_source_id, dst_path, dst_source_id, anchor_text, line_no, edge_type)
-      VALUES (@src_source_id, @dst_path, @dst_source_id, @anchor_text, @line_no, @edge_type)
+      VALUES ($src_source_id, $dst_path, $dst_source_id, $anchor_text, $line_no, $edge_type)
     `);
 
-    const lookupDst = rawDb.prepare<[string], { id: number }>(
-      "SELECT id FROM sources WHERE path = ?"
+    const lookupDst = rawDb.prepare(
+      "SELECT id FROM sources WHERE path = $path"
     );
 
     let written = 0;
     for (const dstPath of outlinks) {
       try {
-        const dstRow = lookupDst.get(dstPath);
+        lookupDst.bind({ $path: dstPath });
+        let dstRow: { id: number } | undefined;
+        if (lookupDst.step()) {
+           dstRow = lookupDst.getAsObject() as { id: number };
+        }
+        lookupDst.reset();
+
         insertWikilink.run({
-          src_source_id: srcSourceId,
-          dst_path: dstPath,
-          dst_source_id: dstRow ? dstRow.id : null,
-          anchor_text: null,
-          line_no: null,
-          edge_type: "wikilink",
+          $src_source_id: srcSourceId,
+          $dst_path: dstPath,
+          $dst_source_id: dstRow ? dstRow.id : null,
+          $anchor_text: null,
+          $line_no: null,
+          $edge_type: "wikilink",
         });
         written++;
 
@@ -426,6 +473,9 @@ export class IndexBuilder {
         );
       }
     }
+
+    insertWikilink.free();
+    lookupDst.free();
 
     return written;
   }

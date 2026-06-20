@@ -8,15 +8,16 @@ export class RagExportService {
 
   async buildContextBundle(lockedNodes: LockedNode[]): Promise<string> {
     const rawDb = this.db.getDb();
-    const selectSource = rawDb.prepare(`SELECT title, metadata_json FROM sources WHERE id = ?`);
-    const selectBlock = rawDb.prepare(`SELECT block_label, text, block_path FROM blocks WHERE id = ?`);
+    const selectSource = rawDb.prepare(`SELECT title, metadata_json FROM sources WHERE id = $id`);
+    const selectBlock = rawDb.prepare(`SELECT block_label, text, block_path FROM blocks WHERE id = $id`);
 
     const sections: string[] = [];
 
     for (const node of lockedNodes) {
-      if (node.nodeType === "note") { // Changed from 'source' to match the updated LockedNode interface
-        const row = selectSource.get(node.nodeId) as { title: string, metadata_json: string } | undefined;
-        if (row) {
+      if (node.nodeType === "note") {
+        selectSource.bind({ $id: node.nodeId });
+        if (selectSource.step()) {
+          const row = selectSource.getAsObject() as { title: string; metadata_json: string };
           sections.push(
             `### Source: ${row.title}\n` +
             `**Path**: ${node.path}\n` +
@@ -24,9 +25,11 @@ export class RagExportService {
             `Metadata: ${row.metadata_json}`
           );
         }
+        selectSource.reset();
       } else if (node.nodeType === "block") {
-        const row = selectBlock.get(node.nodeId) as { block_label: string, text: string, block_path: string } | undefined;
-        if (row) {
+        selectBlock.bind({ $id: node.nodeId });
+        if (selectBlock.step()) {
+          const row = selectBlock.getAsObject() as { block_label: string; text: string; block_path: string };
           sections.push(
             `### Block: ${row.block_label}\n` +
             `**Path**: ${row.block_path}\n` +
@@ -35,8 +38,12 @@ export class RagExportService {
             `${row.text}`
           );
         }
+        selectBlock.reset();
       }
     }
+
+    selectSource.free();
+    selectBlock.free();
 
     const bundle = sections.join("\n\n---\n\n");
     const header = `RAG Context Bundle\nNodes: ${lockedNodes.length}\nCharacters: ${bundle.length}\n\n`;

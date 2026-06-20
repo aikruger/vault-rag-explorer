@@ -9,19 +9,33 @@ export class WikilinkExpander {
     console.log(`${LOG_PREFIX} Expanding wikilinks for path=${sourcePath}`);
     const rawDb = this.db.getDb();
 
-    const outbound = rawDb.prepare(`
+    const outboundStmt = rawDb.prepare(`
       SELECT w.dst_path AS path, 'outbound' AS direction
       FROM wikilinks w
       JOIN sources s ON s.id = w.src_source_id
-      WHERE s.path = ?
-    `).all(sourcePath) as { path: string; direction: string }[];
+      WHERE s.path = $path
+    `);
 
-    const inbound = rawDb.prepare(`
+    outboundStmt.bind({ $path: sourcePath });
+    const outbound: { path: string; direction: string }[] = [];
+    while (outboundStmt.step()) {
+       outbound.push(outboundStmt.getAsObject() as { path: string; direction: string });
+    }
+    outboundStmt.free();
+
+    const inboundStmt = rawDb.prepare(`
       SELECT s.path, 'inbound' AS direction
       FROM wikilinks w
       JOIN sources s ON s.id = w.src_source_id
-      WHERE w.dst_path = ?
-    `).all(sourcePath) as { path: string; direction: string }[];
+      WHERE w.dst_path = $path
+    `);
+
+    inboundStmt.bind({ $path: sourcePath });
+    const inbound: { path: string; direction: string }[] = [];
+    while (inboundStmt.step()) {
+       inbound.push(inboundStmt.getAsObject() as { path: string; direction: string });
+    }
+    inboundStmt.free();
 
     const all = [...outbound, ...inbound];
     console.log(`${LOG_PREFIX} Found ${all.length} wikilink neighbours for ${sourcePath}`);
