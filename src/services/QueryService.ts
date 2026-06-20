@@ -1,6 +1,6 @@
 import type { QueryRequest, QueryResponse, RetrievalHit } from "../types";
 import type { Database } from "../db/Database";
-import type { EmbeddingService } from "./EmbeddingService";
+import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
 
 const LOG_PREFIX = "[QueryService]";
@@ -8,7 +8,7 @@ const LOG_PREFIX = "[QueryService]";
 export class QueryService {
   constructor(
     private db: Database,
-    private embeddingService: EmbeddingService,
+    private embeddingService: SmartConnectionsBridge,
     private embeddingReader: EmbeddingReader
   ) {}
 
@@ -26,6 +26,13 @@ export class QueryService {
     // 1. Embed query
     const queryVec = await this.embeddingService.embed(request.queryText);
     console.log(`${LOG_PREFIX} query embedded, dim=${queryVec.length}`);
+
+    const scModel = this.embeddingService.getModelName();
+    console.log(`[QueryService] SC embed model=${scModel} — stored model in request=${modelName}`);
+    const searchPart = modelName.split('/')[1];
+    if (scModel !== 'unknown' && searchPart && !scModel.includes(searchPart)) {
+        console.warn(`[QueryService] Model mismatch warning: SC is using ${scModel} but stored embeddings indexed with ${modelName}`);
+    }
 
     const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled);
 

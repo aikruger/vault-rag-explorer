@@ -18,7 +18,7 @@ import { Database } from "./db/Database";
 import { AjsonParser } from "./parsers/AjsonParser";
 import { IndexBuilder } from "./db/IndexBuilder";
 
-import { EmbeddingService } from "./services/EmbeddingService";
+import { SmartConnectionsBridge } from "./services/SmartConnectionsBridge";
 import { EmbeddingReader } from "./db/EmbeddingReader";
 import { LockedNodesService } from "./services/LockedNodesService";
 import { SessionService } from "./services/SessionService";
@@ -32,7 +32,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	view: VaultRagExplorerView | null = null;
 	db!: Database;
 	public indexBuilder!: IndexBuilder;
-	public embeddingService!: EmbeddingService;
+	public embeddingService!: SmartConnectionsBridge;
 	public embeddingReader!: EmbeddingReader;
 	public lockedNodesService!: LockedNodesService;
 	public sessionService!: SessionService;
@@ -123,9 +123,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
 		console.log(`${LOG_PREFIX} IndexBuilder instantiated`);
 
-		this.embeddingService = new EmbeddingService(this.settings.embeddingModelName);
+		this.embeddingService = new SmartConnectionsBridge(this.app);
+		console.log(`${LOG_PREFIX} SmartConnectionsBridge ready — SC model=${this.embeddingService.getModelName()}`);
+
 		this.embeddingReader = new EmbeddingReader(this.db);
-		console.log(`${LOG_PREFIX} EmbeddingService and EmbeddingReader ready`);
+		console.log(`${LOG_PREFIX} EmbeddingReader ready`);
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);
