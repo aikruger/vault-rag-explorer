@@ -47,50 +47,18 @@ export class SmartConnectionsBridge {
         const env = sc.smart_env ?? sc.env;
         if (!env) {
             throw new Error(
-                `${LOG_PREFIX} Smart Connections smart_env not initialised yet.`
+                `${LOG_PREFIX} Smart Connections smart_env not initialised yet. ` +
+                `Wait for SC to finish loading before running queries.`
             );
         }
 
-        // --- DIAGNOSTIC: log every key on env and sc so we can find the embedder ---
-        console.log(`${LOG_PREFIX} smart_env keys:`, Object.keys(env));
-        console.log(`${LOG_PREFIX} sc (plugin) keys:`, Object.keys(sc));
+        console.log(`${LOG_PREFIX} smart_env found — resolving embed model`);
+        console.log(`${LOG_PREFIX} _embed_model on smart_env:`, typeof env._embed_model, env._embed_model ? 'EXISTS' : 'MISSING');
 
-        // Log keys that look embedding-related
-        const envEmbedKeys = Object.keys(env).filter(k =>
-            k.toLowerCase().includes('embed') ||
-            k.toLowerCase().includes('model') ||
-            k.toLowerCase().includes('smart')
-        );
-        console.log(`${LOG_PREFIX} embed/model-related keys on smart_env:`, envEmbedKeys);
-
-        // Log any property on env whose value is an object with an embed or embed_batch function
-        for (const key of Object.keys(env)) {
-            const val = env[key];
-            if (val && typeof val === 'object') {
-                if (typeof val.embed === 'function' || typeof val.embed_batch === 'function') {
-                    console.log(`${LOG_PREFIX} FOUND embedder candidate at env.${key} — methods:`, Object.keys(val).filter(k => typeof val[k] === 'function'));
-                }
-            }
-        }
-
-        // Also check sc directly (some SC versions attach embed_model to plugin root)
-        const scEmbedKeys = Object.keys(sc).filter(k =>
-            k.toLowerCase().includes('embed') ||
-            k.toLowerCase().includes('model')
-        );
-        console.log(`${LOG_PREFIX} embed/model-related keys on sc plugin root:`, scEmbedKeys);
-        for (const key of scEmbedKeys) {
-            const val = sc[key];
-            if (val && typeof val === 'object') {
-                if (typeof val.embed === 'function' || typeof val.embed_batch === 'function') {
-                    console.log(`${LOG_PREFIX} FOUND embedder candidate at sc.${key}`);
-                }
-            }
-        }
-        // --- END DIAGNOSTIC ---
-
-        // Try every known location
+        // SC stores the embed model as _embed_model (private/lazy field).
+        // We check all known variants for forwards/backwards compatibility.
         const model =
+            env._embed_model ??
             env.embed_model ??
             env.smart_embed_model ??
             env.embedModel ??
@@ -98,22 +66,17 @@ export class SmartConnectionsBridge {
             env.embed ??
             sc.embed_model ??
             sc.embedModel ??
+            sc._embed_model ??
             null;
 
         if (!model) {
-            // Log full env object shape to console so we can inspect it
-            console.error(`${LOG_PREFIX} Could not find embed model. Full smart_env snapshot:`, JSON.stringify(
-                Object.fromEntries(
-                    Object.keys(env).map(k => [k, typeof env[k]])
-                )
-            ));
             throw new Error(
-                `${LOG_PREFIX} No embed_model found on smart_env. ` +
-                `Check the console log above for "embed/model-related keys" to find the correct property name.`
+                `${LOG_PREFIX} Smart Connections embed model (_embed_model) is null. ` +
+                `SC may still be initialising its embedding model — wait a moment and run the query again.`
             );
         }
 
-        const modelName = model.model_key ?? model.model_name ?? model.config?.model_key ?? 'unknown';
+        const modelName = model.model_key ?? model.model_name ?? model.config?.model_key ?? model.key ?? 'unknown';
         console.log(`${LOG_PREFIX} embed_model resolved — model=${modelName}`);
         return model;
     }
@@ -145,6 +108,10 @@ export class SmartConnectionsBridge {
                 const batch = await model.embed_batch([{ embed_input: text }]);
                 result = batch?.[0];
                 console.log(`${LOG_PREFIX} model.embed_batch() returned batch[0] — type=${typeof result}`);
+            } else if (typeof model.embed_input === 'function') {
+                console.log(`${LOG_PREFIX} calling model.embed_input(text) — SC internal API`);
+                result = await model.embed_input(text);
+                console.log(`${LOG_PREFIX} model.embed_input() returned — type=${typeof result}`);
             } else {
                 throw new Error(`${LOG_PREFIX} Smart Connections embed model has no embed() or embed_batch() method`);
             }
