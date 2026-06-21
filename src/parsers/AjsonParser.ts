@@ -33,50 +33,54 @@ export class AjsonParser {
   }
 
   private parseContentRaw(raw: string, filePath: string, result: ParseResult): void {
-    const lines = raw.split("\n");
+    console.log(`[AjsonParser] parseContentRaw start — filePath=${filePath}`);
+
+    // Strip any leading newlines (some files start with \n, some don't)
+    // Then split on newline to get individual records
+    const lines = raw.replace(/^\n+/, '').split('\n');
+    let processedCount = 0;
+
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line === undefined) continue;
-        const lineStr = line.trim();
-        if (!lineStr) continue;
+        // Strip whitespace then strip the trailing comma SC appends to every line
+        const rawLine = lines[i];
+        if (rawLine === undefined) continue;
 
-        let recordData: unknown;
+        const line = rawLine.trim().replace(/,$/, '');
+        if (!line) continue; // blank lines between records are normal
+
+        // Wrap in {} to make a valid JSON object: "key": {val} → {"key": {val}}
+        let parsed: Record<string, unknown>;
         try {
-            // Because NDJSON files from smart connections are structured as: `"/path/to/file.md": {...}`
-            // We need to wrap it into `{ "/path/to/file.md": {...} }` before parsing
-            recordData = JSON.parse(`{${lineStr}}`);
+            parsed = JSON.parse(`{${line}}`);
         } catch (e) {
-            const msg = `Failed to JSON.parse line ${i + 1} from ${filePath}: ${String(e)}`;
-            console.error(`${LOG_PREFIX} ${msg}`);
-            result.errors.push(msg);
+            console.error(`[AjsonParser] JSON.parse failed line ${i + 1} in ${filePath}: ${String(e)}`);
+            result.errors.push(`Line ${i + 1} in ${filePath}: ${String(e)}`);
             continue;
         }
 
-        if (typeof recordData !== "object" || recordData === null || Array.isArray(recordData)) {
-            const msg = `Unexpected top-level type in content from ${filePath} on line ${i + 1}: expected object`;
-            console.warn(`${LOG_PREFIX} ${msg}`);
-            result.errors.push(msg);
-            continue;
-        }
-
-        const dict = recordData as Record<string, unknown>;
-        for (const [key, val] of Object.entries(dict)) {
-            if (typeof val !== "object" || val === null) continue;
-
+        // Each parsed object has exactly one top-level key
+        for (const [rawKey, val] of Object.entries(parsed)) {
+            if (typeof val !== 'object' || val === null || Array.isArray(val)) continue;
             const record = val as Record<string, unknown>;
-            const classname = record["classname"] as string | undefined;
 
-            if (classname === "SmartSource") {
-                this.parseSource(key, record, result);
-            } else if (classname === "SmartBlock") {
-                this.parseBlock(key, record, result);
+            if (rawKey.startsWith('smart_sources:')) {
+                // Strip prefix to get the vault-relative path
+                const vaultPath = rawKey.substring('smart_sources:'.length);
+                this.parseSource(vaultPath, record, result);
+            } else if (rawKey.startsWith('smart_blocks:')) {
+                // Strip prefix to get the block key (format: path/to/note.md#Heading)
+                const blockKey = rawKey.substring('smart_blocks:'.length);
+                this.parseBlock(blockKey, record, result);
             } else {
                 if (this.enableDebugLogging) {
-                    console.log(`${LOG_PREFIX} Skipping record with key=${key}, classname=${classname}`);
+                    console.log(`[AjsonParser] Line ${i + 1}: unrecognised key prefix — key=${rawKey.substring(0, 60)}`);
                 }
             }
         }
+        processedCount++;
     }
+
+    console.log(`[AjsonParser] parseContentRaw done — linesProcessed=${processedCount} sources=${result.sources.length} blocks=${result.blocks.length} errors=${result.errors.length}`);
   }
 
   /**
@@ -158,51 +162,48 @@ export class AjsonParser {
   // ---------------------------------------------------------------------------
 
   private parseSource(
-    recordKey: string,
+    vaultPath: string,
     record: Record<string, unknown>,
     result: ParseResult
   ): void {
-    // Required field: path
-    const path_ = this.extractPath(record, recordKey);
-    if (!path_) {
-      const msg = `SmartSource record key=${recordKey} has no resolvable path — skipping`;
-      console.warn(`${LOG_PREFIX} ${msg}`);
-      result.skippedCount++;
-      result.errors.push(msg);
-      return;
+    // Skip metadata-only lines (embeddings field exists but is empty {})
+    const embeddings = this.extractEmbeddings(record, vaultPath);
+    if (embeddings.length === 0) {
+        if (this.enableDebugLogging) {
+            console.log(`[AjsonParser] SmartSource ${vaultPath.substring(0, 60)} — no embeddings, skipping (metadata-only line)`);
+        }
+        result.skippedCount++;
+        return;
     }
 
-    const title = this.deriveTitle(path_);
+    const title = this.deriveTitle(vaultPath);
     const hash = this.extractHash(record);
     const embedHash = this.extractEmbedHash(record);
     const mtime = this.extractMtime(record);
     const outlinks = this.extractOutlinks(record);
-    const embeddings = this.extractEmbeddings(record, path_);
-
-    // Strip known structural keys; remaining fields go into metadata
     const metadata = this.extractMetadata(record, [
-      "classname", "path", "key", "outlinks",
-      "last_read", "last_embed", "id", "collection_key",
+        'path', 'key', 'outlinks', 'embeddings',
+        'last_read', 'last_embed', 'id', 'collection_key', 'blocks',
     ]);
 
     const parsed: ParsedSource = {
-      path: path_,
-      title,
-      hash,
-      embedHash,
-      mtime,
-      outlinks,
-      metadata,
-      rawJson: JSON.stringify(record),
-      embeddings,
+        path: vaultPath,
+        title,
+        hash,
+        embedHash,
+        mtime,
+        outlinks,
+        metadata,
+        rawJson: JSON.stringify(record),
+        embeddings,
     };
 
     if (this.enableDebugLogging) {
-      console.log(`${LOG_PREFIX} Parsed SmartSource: ${path_}`, {
-        embeddingCount: embeddings.length,
-        outlinks: outlinks.length,
-        hash,
-      });
+        console.log(`[AjsonParser] Parsed SmartSource: ${vaultPath.substring(0, 60)}`, {
+            embeddingCount: embeddings.length,
+            outlinks: outlinks.length,
+            hash,
+        });
     }
 
     result.sources.push(parsed);
@@ -213,65 +214,68 @@ export class AjsonParser {
   // ---------------------------------------------------------------------------
 
   private parseBlock(
-    recordKey: string,
+    blockKey: string,
     record: Record<string, unknown>,
     result: ParseResult
   ): void {
-    // Required: block_key (fall back to the map key itself)
-    const blockKey = (record["key"] as string | undefined) || recordKey;
     if (!blockKey) {
-      const msg = `SmartBlock record has no key — skipping`;
-      console.warn(`${LOG_PREFIX} ${msg}`);
-      result.skippedCount++;
-      result.errors.push(msg);
-      return;
+        result.skippedCount++;
+        return;
     }
 
-    // Derive parent path: blockKey format is "path/to/note.md#{anchor}"
+    // Skip blocks with no embeddings
+    const embeddings = this.extractEmbeddings(record, blockKey);
+    if (embeddings.length === 0) {
+        if (this.enableDebugLogging) {
+            console.log(`[AjsonParser] SmartBlock ${blockKey.substring(0, 60)} — no embeddings, skipping`);
+        }
+        result.skippedCount++;
+        return;
+    }
+
     const blockPath = this.deriveBlockPath(blockKey);
     if (!blockPath) {
-      const msg = `SmartBlock key=${blockKey} — cannot derive parent path — skipping`;
-      console.warn(`${LOG_PREFIX} ${msg}`);
-      result.skippedCount++;
-      result.errors.push(msg);
-      return;
+        const msg = `SmartBlock key=${blockKey} — cannot derive parent path — skipping`;
+        console.warn(`[AjsonParser] ${msg}`);
+        result.skippedCount++;
+        result.errors.push(msg);
+        return;
     }
 
-    const lineStart = this.extractLineNumber(record, "line_start");
-    const lineEnd = this.extractLineNumber(record, "line_end");
-    const text = (record["text"] as string | undefined) || "";
+    const lineStart = this.extractLineNumber(record, 'line_start');
+    const lineEnd = this.extractLineNumber(record, 'line_end');
+    const text = (record['text'] as string | undefined) ?? '';
     const blockLabel = this.deriveBlockLabel(blockKey, text);
     const hash = this.extractHash(record);
     const embedHash = this.extractEmbedHash(record);
     const outlinks = this.extractOutlinks(record);
-    const embeddings = this.extractEmbeddings(record, blockKey);
 
     const metadata = this.extractMetadata(record, [
-      "classname", "key", "text", "line_start", "line_end",
-      "outlinks", "last_read", "last_embed", "id", "collection_key",
+        'key', 'text', 'line_start', 'line_end',
+        'outlinks', 'embeddings', 'last_read', 'last_embed', 'id', 'collection_key',
     ]);
 
     const parsed: ParsedBlock = {
-      blockKey,
-      blockPath,
-      blockLabel,
-      lineStart,
-      lineEnd,
-      text,
-      textLength: text.length,
-      hash,
-      embedHash,
-      outlinks,
-      metadata,
-      rawJson: JSON.stringify(record),
-      embeddings,
+        blockKey,
+        blockPath,
+        blockLabel,
+        lineStart,
+        lineEnd,
+        text,
+        textLength: text.length,
+        hash,
+        embedHash,
+        outlinks,
+        metadata,
+        rawJson: JSON.stringify(record),
+        embeddings,
     };
 
     if (this.enableDebugLogging) {
-      console.log(`${LOG_PREFIX} Parsed SmartBlock: ${blockKey}`, {
-        lines: `${lineStart}-${lineEnd}`,
-        embeddingCount: embeddings.length,
-      });
+        console.log(`[AjsonParser] Parsed SmartBlock: ${blockKey.substring(0, 60)}`, {
+            lines: `${lineStart}-${lineEnd}`,
+            embeddingCount: embeddings.length,
+        });
     }
 
     result.blocks.push(parsed);
@@ -286,21 +290,13 @@ export class AjsonParser {
    * The path may live under record.path, record.key, or the map key itself.
    */
   private extractPath(record: Record<string, unknown>, fallback: string): string | null {
-    const candidates = [
-      record["path"],
-      record["key"],
-      fallback,
-    ];
-    for (const c of candidates) {
-      if (typeof c === "string" && c.trim().length > 0) {
-        // Accept paths that look like vault note paths (contain / or end with .md)
-        // Reject Smart Connections collection keys like "smart_sources:" etc.
-        const s = c.trim();
-        if (!s.includes(":") || s.endsWith(".md")) {
-          return s;
-        }
-      }
+    // vaultPath is already stripped of smart_sources: prefix at call site
+    // fallback IS the vault path — use it directly
+    if (typeof fallback === 'string' && fallback.trim().length > 0) {
+        return fallback.trim();
     }
+    const p = record['path'];
+    if (typeof p === 'string' && p.trim().length > 0) return p.trim();
     return null;
   }
 
@@ -359,9 +355,13 @@ export class AjsonParser {
   }
 
   private extractOutlinks(record: Record<string, unknown>): string[] {
-    const raw = record["outlinks"];
+    const raw = record['outlinks'];
     if (!Array.isArray(raw)) return [];
-    return raw.filter((v) => typeof v === "string");
+    // Each entry is an object: { title: string, target: string, line: number }
+    return raw
+        .filter(v => typeof v === 'object' && v !== null)
+        .map(v => (v as Record<string, unknown>)['target'] as string)
+        .filter(t => typeof t === 'string' && t.length > 0);
   }
 
   private extractLineNumber(
@@ -387,38 +387,28 @@ export class AjsonParser {
   ): ParsedEmbedding[] {
     const results: ParsedEmbedding[] = [];
 
-    for (const [key, value] of Object.entries(record)) {
-      // Heuristic: model name keys contain "/" (e.g. "TaylorAI/bge-micro-v2")
-      // or start with known prefixes. Check for a "vec" array child.
-      if (typeof value !== "object" || value === null) continue;
-      const embObj = value as Record<string, unknown>;
-      if (!Array.isArray(embObj["vec"])) continue;
+    // Real SC structure: record.embeddings = { "TaylorAI/bge-micro-v2": { vec: [...], tokens: N } }
+    const embeddingsField = record['embeddings'];
+    if (typeof embeddingsField !== 'object' || embeddingsField === null) {
+        return results;
+    }
 
-      const vec = embObj["vec"] as unknown[];
-      const numericVec = vec.filter((v) => typeof v === "number");
+    for (const [modelName, embData] of Object.entries(embeddingsField as Record<string, unknown>)) {
+        if (typeof embData !== 'object' || embData === null) continue;
+        const embObj = embData as Record<string, unknown>;
+        if (!Array.isArray(embObj['vec'])) continue;
 
-      if (numericVec.length === 0) {
-        console.warn(
-          `${LOG_PREFIX} Empty or non-numeric vec for model=${key} owner=${ownerKey} — skipping embedding`
-        );
-        continue;
-      }
+        const vec = (embObj['vec'] as unknown[]).filter(v => typeof v === 'number') as number[];
+        if (vec.length === 0) {
+            console.warn(`[AjsonParser] Empty vec for model=${modelName} owner=${ownerKey.substring(0, 60)}`);
+            continue;
+        }
 
-      if (numericVec.length !== vec.length) {
-        console.warn(
-          `${LOG_PREFIX} vec for model=${key} owner=${ownerKey} has non-numeric entries — using numeric subset (${numericVec.length}/${vec.length})`
-        );
-      }
+        results.push({ modelName, vec, dim: vec.length });
 
-      results.push({
-        modelName: key,
-        vec: numericVec,
-        dim: numericVec.length,
-      });
-
-      if (this.enableDebugLogging) {
-        console.log(`${LOG_PREFIX} Extracted embedding model=${key} dim=${numericVec.length} owner=${ownerKey}`);
-      }
+        if (this.enableDebugLogging) {
+            console.log(`[AjsonParser] Extracted embedding model=${modelName} dim=${vec.length} owner=${ownerKey.substring(0, 60)}`);
+        }
     }
 
     return results;
