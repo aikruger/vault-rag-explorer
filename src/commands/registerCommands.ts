@@ -156,9 +156,18 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 		name: "Build / Rebuild Index from Smart Connections export",
 		callback: async () => {
 			console.log("[Commands] Build index triggered");
-			const exportPath = plugin.settings.smartConnectionsExportPath;
-			if (!exportPath) {
-				new Notice("Set the Smart Connections export path in settings first.");
+
+			const smartFolder = plugin.getSmartFolderPath();
+			if (!smartFolder) {
+				new Notice("Set the Smart folder in settings first.");
+				return;
+			}
+			const multiPath = `${smartFolder}/multi`;
+			console.log('[Commands] Index build — scanning folder:', multiPath);
+
+			const folderExists = await plugin.app.vault.adapter.exists(multiPath);
+			if (!folderExists) {
+				new Notice(`Vault RAG Explorer: folder not found: ${multiPath}. Check Smart Connections has indexed your vault.`);
 				return;
 			}
 			new Notice("Building index… this may take a moment.");
@@ -166,17 +175,40 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 			try {
 				const { AjsonParser } = await import("../parsers/AjsonParser");
 				const parser = new AjsonParser(plugin.settings.enableDebugLogging);
-				const parseResult = await parser.parseFile(exportPath);
 
-				console.log("[Commands] Parse complete", {
-					sources: parseResult.sources.length,
-					blocks: parseResult.blocks.length,
-					errors: parseResult.errors.length,
-				});
+				const listed = await plugin.app.vault.adapter.list(multiPath);
+				const ajsonFiles = listed.files.filter(f => f.endsWith('.ajson'));
+				console.log(`[Commands] Found ${ajsonFiles.length} .ajson files to index`);
+
+				if (ajsonFiles.length === 0) {
+					new Notice('Vault RAG Explorer: no .ajson files found. Has Smart Connections indexed your vault?');
+					return;
+				}
+
+				const allSources: any[] = [];
+				const allBlocks: any[] = [];
+				const allErrors: any[] = [];
+				let skipped = 0;
+
+				for (const filePath of ajsonFiles) {
+					try {
+						const content = await plugin.app.vault.adapter.read(filePath);
+						const result = parser.parseContent(content, filePath);
+						allSources.push(...result.sources);
+						allBlocks.push(...result.blocks);
+						allErrors.push(...result.errors);
+						skipped += result.skippedCount ?? 0;
+					} catch (e) {
+						console.warn(`[Commands] Failed to parse ${filePath}:`, e);
+						allErrors.push(`Parse error in ${filePath}: ${String(e)}`);
+					}
+				}
+
+				console.log(`[Commands] Directory parse complete — sources=${allSources.length} blocks=${allBlocks.length} skipped=${skipped} errors=${allErrors.length}`);
 
 				const buildResult = await plugin.indexBuilder.buildIndex(
-					parseResult.sources,
-					parseResult.blocks,
+					allSources,
+					allBlocks,
 					false // incremental by default
 				);
 
@@ -200,40 +232,57 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 		callback: async () => {
 			console.log("[VaultRagExplorer] Command: rebuild-vault-rag-index-force");
 
-			const exportPath = plugin.settings.smartConnectionsExportPath?.trim();
-			if (!exportPath) {
-				new Notice(
-					"Vault RAG Explorer: set a Smart Connections export path in settings first."
-				);
-				console.warn("[VaultRagExplorer] rebuild-vault-rag-index-force: no export path configured");
+			const smartFolder = plugin.getSmartFolderPath();
+			if (!smartFolder) {
+				new Notice("Set the Smart folder in settings first.");
+				return;
+			}
+			const multiPath = `${smartFolder}/multi`;
+			console.log('[Commands] Index force build — scanning folder:', multiPath);
+
+			const folderExists = await plugin.app.vault.adapter.exists(multiPath);
+			if (!folderExists) {
+				new Notice(`Vault RAG Explorer: folder not found: ${multiPath}. Check Smart Connections has indexed your vault.`);
 				return;
 			}
 
 			new Notice("Vault RAG Explorer: force building index… (check console for progress)");
-			console.log("[VaultRagExplorer] Starting force index build from:", exportPath);
 
 			try {
 				const { AjsonParser } = await import("../parsers/AjsonParser");
 				const parser = new AjsonParser(plugin.settings.enableDebugLogging);
 
-				console.log("[VaultRagExplorer] Parsing .ajson files from:", exportPath);
-				const parseResult = await parser.parseFile(exportPath);
+				const listed = await plugin.app.vault.adapter.list(multiPath);
+				const ajsonFiles = listed.files.filter(f => f.endsWith('.ajson'));
+				console.log(`[Commands] Found ${ajsonFiles.length} .ajson files to index`);
 
-				console.log("[VaultRagExplorer] Parse complete", {
-					sources: parseResult.sources.length,
-					blocks: parseResult.blocks.length,
-					skipped: parseResult.skippedCount,
-					parseErrors: parseResult.errors.length,
-				});
-
-				if (parseResult.errors.length > 0) {
-					console.warn(
-						"[VaultRagExplorer] Parse warnings:",
-						parseResult.errors.slice(0, 10)
-					);
+				if (ajsonFiles.length === 0) {
+					new Notice('Vault RAG Explorer: no .ajson files found. Has Smart Connections indexed your vault?');
+					return;
 				}
 
-				if (parseResult.sources.length === 0 && parseResult.blocks.length === 0) {
+				const allSources: any[] = [];
+				const allBlocks: any[] = [];
+				const allErrors: any[] = [];
+				let skipped = 0;
+
+				for (const filePath of ajsonFiles) {
+					try {
+						const content = await plugin.app.vault.adapter.read(filePath);
+						const result = parser.parseContent(content, filePath);
+						allSources.push(...result.sources);
+						allBlocks.push(...result.blocks);
+						allErrors.push(...result.errors);
+						skipped += result.skippedCount ?? 0;
+					} catch (e) {
+						console.warn(`[Commands] Failed to parse ${filePath}:`, e);
+						allErrors.push(`Parse error in ${filePath}: ${String(e)}`);
+					}
+				}
+
+				console.log(`[Commands] Directory parse complete — sources=${allSources.length} blocks=${allBlocks.length} skipped=${skipped} errors=${allErrors.length}`);
+
+				if (allSources.length === 0 && allBlocks.length === 0) {
 					new Notice(
 						"Vault RAG Explorer: no records found. Check your export path in settings."
 					);
@@ -243,8 +292,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 
 				console.log("[VaultRagExplorer] Writing to database (force)…");
 				const buildResult = await plugin.indexBuilder.buildIndex(
-					parseResult.sources,
-					parseResult.blocks,
+					allSources,
+					allBlocks,
 					true // forceRebuild: DO NOT skip unchanged records
 				);
 

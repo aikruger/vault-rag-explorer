@@ -20,6 +20,65 @@ export class AjsonParser {
   // Public API
   // ---------------------------------------------------------------------------
 
+  public parseContent(content: string, filePath: string): ParseResult {
+      console.log(`[AjsonParser] parseContent — filePath=${filePath} contentLength=${content.length}`);
+      const result: ParseResult = {
+        sources: [],
+        blocks: [],
+        skippedCount: 0,
+        errors: [],
+      };
+      this.parseContentRaw(content, filePath, result);
+      return result;
+  }
+
+  private parseContentRaw(raw: string, filePath: string, result: ParseResult): void {
+    const lines = raw.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line === undefined) continue;
+        const lineStr = line.trim();
+        if (!lineStr) continue;
+
+        let recordData: unknown;
+        try {
+            // Because NDJSON files from smart connections are structured as: `"/path/to/file.md": {...}`
+            // We need to wrap it into `{ "/path/to/file.md": {...} }` before parsing
+            recordData = JSON.parse(`{${lineStr}}`);
+        } catch (e) {
+            const msg = `Failed to JSON.parse line ${i + 1} from ${filePath}: ${String(e)}`;
+            console.error(`${LOG_PREFIX} ${msg}`);
+            result.errors.push(msg);
+            continue;
+        }
+
+        if (typeof recordData !== "object" || recordData === null || Array.isArray(recordData)) {
+            const msg = `Unexpected top-level type in content from ${filePath} on line ${i + 1}: expected object`;
+            console.warn(`${LOG_PREFIX} ${msg}`);
+            result.errors.push(msg);
+            continue;
+        }
+
+        const dict = recordData as Record<string, unknown>;
+        for (const [key, val] of Object.entries(dict)) {
+            if (typeof val !== "object" || val === null) continue;
+
+            const record = val as Record<string, unknown>;
+            const classname = record["classname"] as string | undefined;
+
+            if (classname === "SmartSource") {
+                this.parseSource(key, record, result);
+            } else if (classname === "SmartBlock") {
+                this.parseBlock(key, record, result);
+            } else {
+                if (this.enableDebugLogging) {
+                    console.log(`${LOG_PREFIX} Skipping record with key=${key}, classname=${classname}`);
+                }
+            }
+        }
+    }
+  }
+
   /**
    * Parse a single .ajson file (or a directory of .ajson files) and return
    * all discovered sources and blocks.
@@ -91,46 +150,7 @@ export class AjsonParser {
       return;
     }
 
-    let data: unknown;
-    try {
-      data = JSON.parse(raw);
-    } catch (e) {
-      const msg = `Failed to JSON.parse ${filePath}: ${String(e)}`;
-      console.error(`${LOG_PREFIX} ${msg}`);
-      result.errors.push(msg);
-      return;
-    }
-
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      const msg = `Unexpected top-level type in ${filePath}: expected object`;
-      console.warn(`${LOG_PREFIX} ${msg}`);
-      result.errors.push(msg);
-      return;
-    }
-
-    const topLevel = data as Record<string, unknown>;
-
-    // Iterate every key in the top-level object.
-    // Smart Connections exports store records as flat key→value pairs at the root.
-    // Keys that are not "classname", "id", etc. but whose values are objects
-    // with a "classname" field are the actual records.
-    for (const [key, value] of Object.entries(topLevel)) {
-      if (typeof value !== "object" || value === null) continue;
-      const record = value as Record<string, unknown>;
-
-      const classname = record["classname"] as string | undefined;
-
-      if (classname === "SmartSource") {
-        this.parseSource(key, record, result);
-      } else if (classname === "SmartBlock") {
-        this.parseBlock(key, record, result);
-      } else {
-        // Skip records with no classname or unknown classname
-        if (this.enableDebugLogging) {
-          console.log(`${LOG_PREFIX} Skipping record with key=${key}, classname=${classname}`);
-        }
-      }
-    }
+    this.parseContentRaw(raw, filePath, result);
   }
 
   // ---------------------------------------------------------------------------

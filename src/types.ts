@@ -7,7 +7,6 @@ export type RetrievalMode = "semantic" | "wikilink" | "hybrid" | "pathfinder";
 export interface VaultRagExplorerSettings {
 	smartFolderPath: string;
 	indexDbPath: string;
-	smartConnectionsExportPath: string;
 	embeddingModelName: string;
 	defaultTopK: number;
 	defaultSemanticWeight: number;
@@ -20,7 +19,6 @@ export interface VaultRagExplorerSettings {
 export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
 	smartFolderPath: "",
 	indexDbPath: ".obsidian/plugins/vault-rag-explorer/data/smart_index.db",
-	smartConnectionsExportPath: "",
 	embeddingModelName: "TaylorAI/bge-micro-v2",
 	defaultTopK: 20,
 	defaultSemanticWeight: 1.0,

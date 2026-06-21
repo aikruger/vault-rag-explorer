@@ -67,19 +67,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 
 		// Keep the other existing settings from the original tab for completeness
 		// (indexDbPath, etc.), but as requested we focus the exact file replacement.
-		new Setting(containerEl)
-			.setName("Smart Connections export path")
-			.setDesc("Path to Smart Connections export folder or source file")
-			.addText((text) =>
-				text
-					.setPlaceholder("/path/to/export")
-					.setValue(this.plugin.settings.smartConnectionsExportPath)
-					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: smartConnectionsExportPath", value);
-						this.plugin.settings.smartConnectionsExportPath = value.trim();
-						await this.plugin.saveSettings();
-					})
-			);
 
 		new Setting(containerEl)
 			.setName("Index DB path")
