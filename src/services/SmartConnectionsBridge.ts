@@ -47,18 +47,69 @@ export class SmartConnectionsBridge {
         const env = sc.smart_env ?? sc.env;
         if (!env) {
             throw new Error(
-                `${LOG_PREFIX} Smart Connections smart_env not initialised yet. ` +
-                `Wait for SC to finish loading before running queries.`
+                `${LOG_PREFIX} Smart Connections smart_env not initialised yet.`
             );
         }
-        console.log(`${LOG_PREFIX} smart_env found — keys=${Object.keys(env).join(', ')}`);
 
-        // SC v2.x uses embed_model; earlier builds use smart_embed_model
-        const model = env.embed_model ?? env.smart_embed_model;
+        // --- DIAGNOSTIC: log every key on env and sc so we can find the embedder ---
+        console.log(`${LOG_PREFIX} smart_env keys:`, Object.keys(env));
+        console.log(`${LOG_PREFIX} sc (plugin) keys:`, Object.keys(sc));
+
+        // Log keys that look embedding-related
+        const envEmbedKeys = Object.keys(env).filter(k =>
+            k.toLowerCase().includes('embed') ||
+            k.toLowerCase().includes('model') ||
+            k.toLowerCase().includes('smart')
+        );
+        console.log(`${LOG_PREFIX} embed/model-related keys on smart_env:`, envEmbedKeys);
+
+        // Log any property on env whose value is an object with an embed or embed_batch function
+        for (const key of Object.keys(env)) {
+            const val = env[key];
+            if (val && typeof val === 'object') {
+                if (typeof val.embed === 'function' || typeof val.embed_batch === 'function') {
+                    console.log(`${LOG_PREFIX} FOUND embedder candidate at env.${key} — methods:`, Object.keys(val).filter(k => typeof val[k] === 'function'));
+                }
+            }
+        }
+
+        // Also check sc directly (some SC versions attach embed_model to plugin root)
+        const scEmbedKeys = Object.keys(sc).filter(k =>
+            k.toLowerCase().includes('embed') ||
+            k.toLowerCase().includes('model')
+        );
+        console.log(`${LOG_PREFIX} embed/model-related keys on sc plugin root:`, scEmbedKeys);
+        for (const key of scEmbedKeys) {
+            const val = sc[key];
+            if (val && typeof val === 'object') {
+                if (typeof val.embed === 'function' || typeof val.embed_batch === 'function') {
+                    console.log(`${LOG_PREFIX} FOUND embedder candidate at sc.${key}`);
+                }
+            }
+        }
+        // --- END DIAGNOSTIC ---
+
+        // Try every known location
+        const model =
+            env.embed_model ??
+            env.smart_embed_model ??
+            env.embedModel ??
+            env.smart_embed ??
+            env.embed ??
+            sc.embed_model ??
+            sc.embedModel ??
+            null;
+
         if (!model) {
+            // Log full env object shape to console so we can inspect it
+            console.error(`${LOG_PREFIX} Could not find embed model. Full smart_env snapshot:`, JSON.stringify(
+                Object.fromEntries(
+                    Object.keys(env).map(k => [k, typeof env[k]])
+                )
+            ));
             throw new Error(
                 `${LOG_PREFIX} No embed_model found on smart_env. ` +
-                `Smart Connections may still be initialising — try again in a moment.`
+                `Check the console log above for "embed/model-related keys" to find the correct property name.`
             );
         }
 
