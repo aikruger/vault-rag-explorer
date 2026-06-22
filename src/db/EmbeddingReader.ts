@@ -12,6 +12,9 @@ export interface StoredEmbedding {
   vec: Float32Array;
 }
 
+import type { Database as SqlJsDatabase } from "sql.js";
+import { getScalar, getRows } from "./IndexBuilder";
+
 export class EmbeddingReader {
   constructor(private db: Database) {}
 
@@ -21,7 +24,22 @@ export class EmbeddingReader {
    */
   loadAll(modelName: string): StoredEmbedding[] {
     const rawDb = this.db.getDb();
-    console.log(`[EmbeddingReader] Loading embeddings for model`, modelName);
+    console.log('[EmbeddingReader] loadEmbeddings start', { modelName });
+
+    console.log('[EmbeddingReader] DB counts before model query', {
+      totalEmbeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
+      byModel: getRows(rawDb, `
+        SELECT model_name as modelname, COUNT(*) AS count
+        FROM embeddings
+        GROUP BY model_name
+        ORDER BY count DESC
+      `),
+    });
+
+    console.log('[EmbeddingReader] querying embeddings', {
+      requestedModel: modelName,
+    });
+
     const stmt = rawDb.prepare(`
       SELECT owner_type, owner_id, model_name, dim, norm, is_normalized, embedding
       FROM embeddings
@@ -61,7 +79,19 @@ export class EmbeddingReader {
     }
     stmt.free();
 
-    console.log(`${LOG_PREFIX} Loaded ${results.length} embeddings for model=${modelName}`);
+    console.log('[EmbeddingReader] query results', {
+      requestedModel: modelName,
+      rowCount: results.length,
+      sample: results[0]
+        ? {
+            ownerType: results[0].ownerType,
+            ownerId: results[0].ownerId,
+            modelName: results[0].modelName,
+            dim: results[0].dim,
+          }
+        : null,
+    });
+
     return results;
   }
 

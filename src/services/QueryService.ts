@@ -28,7 +28,12 @@ export class QueryService {
     console.log(`${LOG_PREFIX} query embedded, dim=${queryVec.length}`);
 
     const scModel = this.embeddingService.getModelName();
-    console.log(`[QueryService] SC embed model=${scModel} — stored model in request=${modelName}`);
+    console.log('[QueryService] query context', {
+      requestedTopK: topK,
+      embeddedDim: queryVec.length,
+      scModelName: scModel,
+    });
+
     const searchPart = modelName.split('/')[1];
     if (scModel !== 'unknown' && searchPart && !scModel.includes(searchPart)) {
         console.warn(`[QueryService] Model mismatch warning: SC is using ${scModel} but stored embeddings indexed with ${modelName}`);
@@ -78,7 +83,13 @@ export class QueryService {
 
   private scoreAndRank(queryVec: Float32Array, modelName: string, topK: number, wikilinkBoostEnabled: boolean): RetrievalHit[] {
     // 2. Load stored embeddings
+    console.log('[QueryService] loading stored embeddings', { modelName });
     const storedEmbeddings = this.embeddingReader.loadAll(modelName);
+
+    console.log('[QueryService] stored embeddings loaded', {
+      modelName,
+      count: storedEmbeddings.length,
+    });
 
     if (storedEmbeddings.length === 0) {
       console.warn(`${LOG_PREFIX} No stored embeddings found for model ${modelName}`);

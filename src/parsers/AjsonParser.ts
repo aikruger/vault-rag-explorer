@@ -33,11 +33,28 @@ export class AjsonParser {
   }
 
   private parseContentRaw(raw: string, filePath: string, result: ParseResult): void {
-    console.log(`[AjsonParser] parseContentRaw start — filePath=${filePath}`);
+    console.log(`[AjsonParser] parse start`, { filePath });
+
+    const rawPreview = raw.slice(0, 200).replace(/\n/g, '\\n');
+    console.log(`[AjsonParser] raw file stats`, {
+      filePath,
+      rawLength: raw.length,
+      startsWithNewline: raw.startsWith('\n'),
+      preview: rawPreview,
+    });
 
     // Strip any leading newlines (some files start with \n, some don't)
     // Then split on newline to get individual records
-    const lines = raw.replace(/^\n+/, '').split('\n');
+    const normalized = raw.replace(/^\s+/, '');
+    const lines = normalized.trim().split('\n').map(l => l.trim()).filter(Boolean);
+
+    console.log(`[AjsonParser] normalized lines`, {
+      filePath,
+      lineCount: lines.length,
+      firstLinePreview: lines[0]?.slice(0, 160),
+      secondLinePreview: lines[1]?.slice(0, 160),
+    });
+
     let processedCount = 0;
 
     for (let i = 0; i < lines.length; i++) {
@@ -48,12 +65,25 @@ export class AjsonParser {
         const line = rawLine.trim().replace(/,$/, '');
         if (!line) continue; // blank lines between records are normal
 
+        const wrapped = `{${line}}`;
+        console.log(`[AjsonParser] parsing line`, {
+          filePath,
+          lineIndex: i,
+          preview: wrapped.slice(0, 200),
+        });
+
         // Wrap in {} to make a valid JSON object: "key": {val} → {"key": {val}}
         let parsed: Record<string, unknown>;
         try {
-            parsed = JSON.parse(`{${line}}`);
+            parsed = JSON.parse(wrapped);
         } catch (e) {
-            console.error(`[AjsonParser] JSON.parse failed line ${i + 1} in ${filePath}: ${String(e)}`);
+            console.log(`[AjsonParser] JSON parse failed`, {
+              filePath,
+              lineIndex: i,
+              error: String(e),
+              rawLinePreview: line.slice(0, 200),
+              wrappedPreview: wrapped.slice(0, 200),
+            });
             result.errors.push(`Line ${i + 1} in ${filePath}: ${String(e)}`);
             continue;
         }
@@ -80,7 +110,48 @@ export class AjsonParser {
         processedCount++;
     }
 
-    console.log(`[AjsonParser] parseContentRaw done — linesProcessed=${processedCount} sources=${result.sources.length} blocks=${result.blocks.length} errors=${result.errors.length}`);
+    console.log(`[AjsonParser] parse complete`, {
+      filePath,
+      sourceRecords: result.sources.length,
+      blockRecords: result.blocks.length,
+      embeddingRecords: result.sources.reduce((a, s) => a + s.embeddings.length, 0) + result.blocks.reduce((a, b) => a + b.embeddings.length, 0),
+      models: Array.from(new Set([
+        ...result.sources.flatMap(s => s.embeddings.map(e => e.modelName)),
+        ...result.blocks.flatMap(b => b.embeddings.map(e => e.modelName))
+      ])).slice(0, 10),
+    });
+
+    if (result.sources.length > 0) {
+        const source0 = result.sources[0];
+        if (source0 && source0.embeddings.length > 0) {
+            const sample = source0.embeddings[0];
+            if (sample) {
+                console.log('[AjsonParser] sample source embedding', {
+                    ownerType: 'source',
+                    ownerId: source0.path,
+                    modelName: sample.modelName,
+                    dim: sample.vec?.length,
+                    first3: sample.vec?.slice(0, 3),
+                });
+            }
+        }
+    }
+
+    if (result.blocks.length > 0) {
+        const block0 = result.blocks[0];
+        if (block0 && block0.embeddings.length > 0) {
+            const sampleBlock = block0.embeddings[0];
+            if (sampleBlock) {
+                console.log('[AjsonParser] sample block embedding', {
+                    ownerType: 'block',
+                    ownerId: block0.blockKey,
+                    modelName: sampleBlock.modelName,
+                    dim: sampleBlock.vec?.length,
+                    first3: sampleBlock.vec?.slice(0, 3),
+                });
+            }
+        }
+    }
   }
 
   /**

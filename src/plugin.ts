@@ -115,10 +115,16 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		console.log(`${LOG_PREFIX} initialiseServices`, { smartFolderPath });
 
+		console.log('[VaultRagExplorerPlugin] plugin manifest id', this.manifest.id);
+		console.log('[VaultRagExplorerPlugin] resolved plugin dir', this.manifest.dir);
+		console.log('[VaultRagExplorerPlugin] resolved smart_index.db path', this.settings.indexDbPath);
+		console.log('[VaultRagExplorerPlugin] resolved smart folder path', smartFolderPath);
+
 		// Initialize Database
 		this.db = new Database(this.app, this.settings.indexDbPath, this);
 		console.log(`${LOG_PREFIX} Database instance created with pluginDir from manifest`);
 		await this.db.init();
+		console.log('[VaultRagExplorerPlugin] database opened', { dbPath: this.settings.indexDbPath });
 
 		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
 		console.log(`${LOG_PREFIX} IndexBuilder instantiated`);

@@ -165,6 +165,10 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 			const multiPath = `${smartFolder}/multi`;
 			console.log('[Commands] Index build — scanning folder:', multiPath);
 
+				console.log('[IndexBuilder] scan start', { smartFolderPath: smartFolder });
+
+			console.log('[IndexBuilder] scan start', { smartFolderPath: smartFolder });
+
 			const folderExists = await plugin.app.vault.adapter.exists(multiPath);
 			if (!folderExists) {
 				new Notice(`Vault RAG Explorer: folder not found: ${multiPath}. Check Smart Connections has indexed your vault.`);
@@ -189,6 +193,9 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				const allBlocks: any[] = [];
 				const allErrors: any[] = [];
 				let skipped = 0;
+					let parsedOk = 0;
+					const failedFiles: string[] = [];
+					const modelCounts = new Map<string, number>();
 
 				for (const filePath of ajsonFiles) {
 					try {
@@ -254,9 +261,14 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 
 				const listed = await plugin.app.vault.adapter.list(multiPath);
 				const ajsonFiles = listed.files.filter(f => f.endsWith('.ajson'));
-				console.log(`[Commands] Found ${ajsonFiles.length} .ajson files to index`);
+
+				console.log('[IndexBuilder] scan results', {
+					ajsonFileCount: ajsonFiles.length,
+					sampleFiles: ajsonFiles.slice(0, 5),
+				});
 
 				if (ajsonFiles.length === 0) {
+					console.log('[IndexBuilder] no .ajson files found', { smartFolderPath: smartFolder });
 					new Notice('Vault RAG Explorer: no .ajson files found. Has Smart Connections indexed your vault?');
 					return;
 				}
@@ -321,6 +333,93 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 			}
 		},
 	});
+
+		plugin.addCommand({
+			id: "debug-vault-rag-index-status",
+			name: "Debug Index Status",
+			callback: async () => {
+				console.log("[VaultRagExplorer] Command: debug-vault-rag-index-status");
+				try {
+					const { getScalar, getRows } = await import("../db/IndexBuilder");
+					const dbPath = plugin.settings.indexDbPath;
+					const adapter = plugin.app.vault.adapter;
+					const exists = await adapter.exists(dbPath);
+					const stat = exists ? await adapter.stat(dbPath) : { size: 0 };
+
+					const rawDb = plugin.db.getDb();
+					console.log('[VaultRagExplorerPlugin] debug index status', {
+						dbPath,
+						exists,
+						size: stat?.size,
+						tables: getRows(rawDb, `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`),
+						counts: {
+							sources: getScalar(rawDb, 'SELECT COUNT(*) FROM sources'),
+							blocks: getScalar(rawDb, 'SELECT COUNT(*) FROM blocks'),
+							embeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
+						},
+						embeddingsByModel: getRows(rawDb, `
+							SELECT model_name as modelname, COUNT(*) AS count
+							FROM embeddings
+							GROUP BY model_name
+							ORDER BY count DESC
+						`),
+						sampleEmbeddings: getRows(rawDb, `
+							SELECT owner_type as ownertype, owner_id as ownerid, model_name as modelname, dim
+							FROM embeddings
+							LIMIT 5
+						`),
+					});
+					new Notice("Debug Index Status logged to console.");
+				} catch (e) {
+					console.error("[VaultRagExplorer] Debug Index Status failed:", e);
+					new Notice("Debug Index Status failed. Check console.");
+				}
+			},
+		});
+
+		plugin.addCommand({
+			id: "debug-parse-first-ajson-file",
+			name: "Debug Parse First AJSON File",
+			callback: async () => {
+				console.log("[VaultRagExplorer] Command: debug-parse-first-ajson-file");
+				try {
+					const smartFolder = plugin.getSmartFolderPath();
+					if (!smartFolder) {
+						new Notice("Set the Smart folder in settings first.");
+						return;
+					}
+					const multiPath = `${smartFolder}/multi`;
+					const listed = await plugin.app.vault.adapter.list(multiPath);
+					const ajsonFiles = listed.files.filter(f => f.endsWith('.ajson'));
+
+					if (ajsonFiles.length === 0) {
+						new Notice("No .ajson files found to parse.");
+						return;
+					}
+
+					const firstFile = ajsonFiles[0];
+					if (!firstFile) return;
+
+					console.log(`[VaultRagExplorer] Parsing first file: ${firstFile}`);
+					const content = await plugin.app.vault.adapter.read(firstFile);
+
+					const { AjsonParser } = await import("../parsers/AjsonParser");
+					const parser = new AjsonParser(true);
+					const result = parser.parseContent(content, firstFile);
+
+					console.log(`[VaultRagExplorer] First file parse result:`, {
+						filePath: firstFile,
+						sources: result.sources.length,
+						blocks: result.blocks.length,
+						errors: result.errors.length,
+					});
+					new Notice(`Parsed ${firstFile}. Check console for details.`);
+				} catch (e) {
+					console.error("[VaultRagExplorer] Debug Parse First AJSON File failed:", e);
+					new Notice("Debug Parse First AJSON File failed. Check console.");
+				}
+			},
+		});
 
 	console.log("[VaultRagExplorer] Commands registered");
 }

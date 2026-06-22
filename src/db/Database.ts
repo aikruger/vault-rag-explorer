@@ -80,13 +80,61 @@ export class Database {
     }
 
     public persist(): void {
-        if (!this.db) {
-            console.warn(`${LOG} persist() called but DB is null — skipping`);
+        if (!this.db || !this.SQL) {
+            console.warn(`${LOG} persist() called but DB or SQL is null — skipping`);
             return;
         }
         try {
             const data = this.db.export();
-            fs.writeFileSync(this.dbPath, Buffer.from(data));
+            const buffer = Buffer.from(data);
+
+            console.log('[IndexBuilder] persisting DB to disk', {
+              dbPath: this.dbPath,
+              byteLength: buffer.length,
+            });
+
+            fs.writeFileSync(this.dbPath, buffer);
+
+            const stat = fs.statSync(this.dbPath);
+            console.log('[IndexBuilder] persisted file stat', {
+              dbPath: this.dbPath,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+            });
+
+            console.log('[IndexBuilder] readback verification start', { dbPath: this.dbPath });
+
+            const fileBuffer = fs.readFileSync(this.dbPath);
+            const verifyDb = new this.SQL.Database(fileBuffer);
+
+            const getScalar = (db: SqlJsDatabase, sql: string): number | string | null => {
+                const res = db.exec(sql);
+                return res?.[0]?.values?.[0]?.[0] as number | string ?? null;
+            };
+
+            const getRows = (db: SqlJsDatabase, sql: string): any[] => {
+                const res = db.exec(sql);
+                if (!res?.[0]) return [];
+                const cols = res[0].columns;
+                return res[0].values.map((row: any[]) =>
+                    Object.fromEntries(cols.map((c: string, i: number) => [c, row[i]]))
+                );
+            };
+
+            console.log('[IndexBuilder] readback verification counts', {
+                sources: getScalar(verifyDb, 'SELECT COUNT(*) FROM sources'),
+                blocks: getScalar(verifyDb, 'SELECT COUNT(*) FROM blocks'),
+                embeddings: getScalar(verifyDb, 'SELECT COUNT(*) FROM embeddings'),
+                embeddingsByModel: getRows(verifyDb, `
+                    SELECT model_name as modelname, COUNT(*) AS count
+                    FROM embeddings
+                    GROUP BY model_name
+                    ORDER BY count DESC
+                `),
+            });
+
+            verifyDb.close();
+
             console.log(`${LOG} DB persisted to disk at`, this.dbPath);
         } catch (error) {
             console.error(`${LOG} Failed to persist DB:`, error);

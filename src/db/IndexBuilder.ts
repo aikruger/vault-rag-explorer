@@ -12,6 +12,30 @@ const LOG_PREFIX = "[IndexBuilder]";
 /** Number of records to write per SQLite transaction. */
 const BATCH_SIZE = 500;
 
+export function getScalar(db: SqlJsDatabase, sql: string): number | string | null {
+  try {
+    const res = db.exec(sql);
+    return res?.[0]?.values?.[0]?.[0] as number | string ?? null;
+  } catch (e) {
+    console.log('[IndexBuilder] SQL debug query failed (getScalar)', { sql, error: e });
+    return null;
+  }
+}
+
+export function getRows(db: SqlJsDatabase, sql: string): any[] {
+  try {
+    const res = db.exec(sql);
+    if (!res?.[0]) return [];
+    const cols = res[0].columns;
+    return res[0].values.map((row: any[]) =>
+      Object.fromEntries(cols.map((c: string, i: number) => [c, row[i]]))
+    );
+  } catch (e) {
+    console.log('[IndexBuilder] SQL debug query failed (getRows)', { sql, error: e });
+    return [];
+  }
+}
+
 export class IndexBuilder {
   private db: Database;
   private enableDebugLogging: boolean;
@@ -70,11 +94,43 @@ export class IndexBuilder {
     rawDb.exec("PRAGMA temp_store = MEMORY;");
     console.log(`${LOG_PREFIX} Applied WAL pragmas`);
 
+    console.log('[IndexBuilder] schema tables', getRows(rawDb, `
+      SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
+    `));
+
+    console.log('[IndexBuilder] embeddings schema', getRows(rawDb, `
+      PRAGMA table_info(embeddings);
+    `));
+
+    console.log('[IndexBuilder] pre-insert DB counts', {
+      sources: getScalar(rawDb, 'SELECT COUNT(*) FROM sources'),
+      blocks: getScalar(rawDb, 'SELECT COUNT(*) FROM blocks'),
+      embeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
+    });
+
     // --- Sources ---
     this.upsertSources(rawDb, sources, forceRebuild, result);
 
     // --- Blocks ---
     this.upsertBlocks(rawDb, blocks, forceRebuild, result);
+
+    console.log('[IndexBuilder] post-insert DB counts', {
+      sources: getScalar(rawDb, 'SELECT COUNT(*) FROM sources'),
+      blocks: getScalar(rawDb, 'SELECT COUNT(*) FROM blocks'),
+      embeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
+      embeddingsByModel: getRows(rawDb, `
+        SELECT model_name as modelname, COUNT(*) AS count
+        FROM embeddings
+        GROUP BY model_name
+        ORDER BY count DESC
+      `),
+      embeddingsByOwnerType: getRows(rawDb, `
+        SELECT owner_type as ownertype, COUNT(*) AS count
+        FROM embeddings
+        GROUP BY owner_type
+        ORDER BY count DESC
+      `),
+    });
 
     result.durationMs = Date.now() - startTime;
     this.db.persist();
@@ -130,7 +186,8 @@ export class IndexBuilder {
     for (let batchStart = 0; batchStart < sources.length; batchStart += BATCH_SIZE) {
       const batch = sources.slice(batchStart, batchStart + BATCH_SIZE);
       console.log(
-        `${LOG_PREFIX} Sources batch ${batchStart + 1}-${batchStart + batch.length} of ${sources.length}`
+        `${LOG_PREFIX} inserting sources batch ${batchStart + 1}-${batchStart + batch.length} of ${sources.length}`,
+        { batchSize: batch.length }
       );
 
       rawDb.exec("BEGIN TRANSACTION;");
@@ -251,7 +308,8 @@ export class IndexBuilder {
     for (let batchStart = 0; batchStart < blocks.length; batchStart += BATCH_SIZE) {
       const batch = blocks.slice(batchStart, batchStart + BATCH_SIZE);
       console.log(
-        `${LOG_PREFIX} Blocks batch ${batchStart + 1}-${batchStart + batch.length} of ${blocks.length}`
+        `${LOG_PREFIX} inserting blocks batch ${batchStart + 1}-${batchStart + batch.length} of ${blocks.length}`,
+        { batchSize: batch.length }
       );
 
       rawDb.exec("BEGIN TRANSACTION;");
@@ -386,6 +444,7 @@ export class IndexBuilder {
 
     let written = 0;
     for (const emb of embeddings) {
+      console.log(`[IndexBuilder] inserting embeddings batch`, { batchSize: embeddings.length, modelName: emb.modelName });
       try {
         const { blob, norm, isNormalized } = this.packEmbedding(emb.vec);
 
