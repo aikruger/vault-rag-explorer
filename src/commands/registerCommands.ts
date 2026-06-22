@@ -421,5 +421,105 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 			},
 		});
 
+		plugin.addCommand({
+			id: "debug-run-index-build",
+			name: "Vault RAG Explorer: Debug — Run Index Build",
+			callback: async () => {
+				console.log("[VaultRagExplorerPlugin] === INDEX BUILD START ===");
+
+				// Step A: resolve paths
+				const basePath = (plugin.app.vault.adapter as any).basePath;
+				const path = await import("path");
+				const pluginDir = path.join(basePath, ".obsidian", "plugins", plugin.manifest.id);
+				const dataDir = path.join(pluginDir, "data");
+				const dbPath = path.join(dataDir, "smart_index.db");
+				const smartFolderPath = path.join(basePath, ".smart-env", "multi");
+
+				console.log("[VaultRagExplorerPlugin] resolved paths", {
+					basePath,
+					pluginDir,
+					dataDir,
+					dbPath,
+					smartFolderPath,
+				});
+
+				// Step B: check smart folder exists
+				const fs = await import("fs");
+				const smartFolderExists = fs.existsSync(smartFolderPath);
+				console.log("[VaultRagExplorerPlugin] smart folder exists?", {
+					smartFolderPath,
+					exists: smartFolderExists,
+				});
+
+				if (!smartFolderExists) {
+					console.log("[VaultRagExplorerPlugin] FATAL: smart folder not found — aborting");
+					new Notice("Vault RAG Explorer: .smart-env/multi folder not found. Has Smart Connections run?");
+					return;
+				}
+
+				// Step C: list .ajson files
+				const allFiles = fs.readdirSync(smartFolderPath);
+				const ajsonFiles = allFiles.filter((f: string) => f.endsWith(".ajson"));
+				console.log("[VaultRagExplorerPlugin] ajson file discovery", {
+					totalFilesInFolder: allFiles.length,
+					ajsonCount: ajsonFiles.length,
+					first5: ajsonFiles.slice(0, 5),
+				});
+
+				if (ajsonFiles.length === 0 || !ajsonFiles[0]) {
+					console.log("[VaultRagExplorerPlugin] FATAL: no .ajson files found — aborting");
+					new Notice("Vault RAG Explorer: No .ajson files found in .smart-env/multi");
+					return;
+				}
+
+				// Step D: parse first file manually to test parser
+				const firstFile = path.join(smartFolderPath, ajsonFiles[0]);
+				const rawContent = fs.readFileSync(firstFile, "utf8");
+				console.log("[VaultRagExplorerPlugin] first file raw preview", {
+					file: ajsonFiles[0],
+					rawLength: rawContent.length,
+					startsWithNewline: rawContent.startsWith("\n"),
+					first300chars: rawContent.slice(0, 300).replace(/\n/g, "\\n"),
+				});
+
+				// Step E: trigger the actual index build
+				console.log("[VaultRagExplorerPlugin] triggering indexBuilder.buildIndex()");
+				try {
+					const { AjsonParser } = await import("../parsers/AjsonParser");
+					const parser = new AjsonParser(plugin.settings.enableDebugLogging);
+
+					const allSources: any[] = [];
+					const allBlocks: any[] = [];
+
+					for (const filePath of ajsonFiles) {
+						const fp = path.join(smartFolderPath, filePath);
+						const content = fs.readFileSync(fp, "utf8");
+						const result = parser.parseContent(content, fp);
+						allSources.push(...result.sources);
+						allBlocks.push(...result.blocks);
+					}
+
+					await plugin.indexBuilder.buildIndex(allSources, allBlocks, false);
+					console.log("[VaultRagExplorerPlugin] buildIndex() completed without throwing");
+				} catch (err) {
+					console.log("[VaultRagExplorerPlugin] buildIndex() THREW", { error: String(err), stack: (err as Error).stack });
+					new Notice("Vault RAG Explorer: Index build failed — see console");
+					return;
+				}
+
+				// Step F: verify DB after build
+				const dbExists = fs.existsSync(dbPath);
+				const dbSize = dbExists ? fs.statSync(dbPath).size : 0;
+				console.log("[VaultRagExplorerPlugin] post-build DB stat", {
+					dbPath,
+					exists: dbExists,
+					sizeBytes: dbSize,
+				});
+
+				new Notice(`Vault RAG Explorer: Index build complete — DB size: ${dbSize} bytes`);
+				console.log("[VaultRagExplorerPlugin] === INDEX BUILD END ===");
+			}
+		});
+
 	console.log("[VaultRagExplorer] Commands registered");
 }
