@@ -60,6 +60,7 @@ export class IndexBuilder {
     blocks: ParsedBlock[],
     forceRebuild = false
   ): Promise<IndexBuildResult> {
+    console.log('[IndexBuilder] buildIndex() ENTER');
     const startTime = Date.now();
     console.log(`${LOG_PREFIX} buildIndex started`, {
       sourcesTotal: sources.length,
@@ -108,11 +109,15 @@ export class IndexBuilder {
       embeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
     });
 
+    console.log('[IndexBuilder] beginning insert phase');
+
     // --- Sources ---
     this.upsertSources(rawDb, sources, forceRebuild, result);
 
     // --- Blocks ---
     this.upsertBlocks(rawDb, blocks, forceRebuild, result);
+
+    console.log('[IndexBuilder] insert phase complete');
 
     console.log('[IndexBuilder] post-insert DB counts', {
       sources: getScalar(rawDb, 'SELECT COUNT(*) FROM sources'),
@@ -148,6 +153,7 @@ export class IndexBuilder {
       errors: result.errors.length,
     });
 
+    console.log('[IndexBuilder] buildIndex() EXIT');
     return result;
   }
 

@@ -381,43 +381,74 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 			id: "debug-parse-first-ajson-file",
 			name: "Debug Parse First AJSON File",
 			callback: async () => {
-				console.log("[VaultRagExplorer] Command: debug-parse-first-ajson-file");
+				const fs = await import("fs");
+				const path = await import("path");
+
+				const basePath = (plugin.app.vault.adapter as any).basePath;
+				const smartFolder = path.join(basePath, ".smart-env", "multi");
+
+				console.log("[VaultRagExplorerPlugin] debug-parse-first-ajson-file", { smartFolder });
+
+				if (!fs.existsSync(smartFolder)) {
+					console.log("[VaultRagExplorerPlugin] FATAL: smart folder missing", { smartFolder });
+					new Notice("Smart folder not found: " + smartFolder);
+					return;
+				}
+
+				const all = fs.readdirSync(smartFolder);
+				const ajson = all.filter((f: string) => f.endsWith(".ajson"));
+				console.log("[VaultRagExplorerPlugin] ajson files found", {
+					total: all.length,
+					ajsonCount: ajson.length,
+					first5: ajson.slice(0, 5),
+				});
+
+				if (ajson.length === 0) {
+					const rootFolder = path.join(basePath, ".smart-env");
+					let rootAll: string[] = [];
+					try {
+						rootAll = fs.readdirSync(rootFolder);
+					} catch(e) { /* ignore */ }
+					console.log("[VaultRagExplorerPlugin] root .smart-env contents", { rootAll });
+					new Notice("No .ajson files in multi/ — check console for root folder contents");
+					return;
+				}
+
+				const firstFile = ajson[0];
+				if (!firstFile) return;
+
+				const firstPath = path.join(smartFolder, firstFile);
+				const raw = fs.readFileSync(firstPath, "utf8");
+
+				console.log("[VaultRagExplorerPlugin] first file raw", {
+					fileName: firstFile,
+					rawLength: raw.length,
+					startsWithNewline: raw.startsWith("\n"),
+					first400: raw.slice(0, 400).replace(/\n/g, "\\n"),
+				});
+
+				let parsed: any;
 				try {
-					const smartFolder = plugin.getSmartFolderPath();
-					if (!smartFolder) {
-						new Notice("Set the Smart folder in settings first.");
-						return;
-					}
-					const multiPath = `${smartFolder}/multi`;
-					const listed = await plugin.app.vault.adapter.list(multiPath);
-					const ajsonFiles = listed.files.filter(f => f.endsWith('.ajson'));
-
-					if (ajsonFiles.length === 0) {
-						new Notice("No .ajson files found to parse.");
-						return;
-					}
-
-					const firstFile = ajsonFiles[0];
-					if (!firstFile) return;
-
-					console.log(`[VaultRagExplorer] Parsing first file: ${firstFile}`);
-					const content = await plugin.app.vault.adapter.read(firstFile);
-
 					const { AjsonParser } = await import("../parsers/AjsonParser");
 					const parser = new AjsonParser(true);
-					const result = parser.parseContent(content, firstFile);
-
-					console.log(`[VaultRagExplorer] First file parse result:`, {
-						filePath: firstFile,
-						sources: result.sources.length,
-						blocks: result.blocks.length,
-						errors: result.errors.length,
-					});
-					new Notice(`Parsed ${firstFile}. Check console for details.`);
-				} catch (e) {
-					console.error("[VaultRagExplorer] Debug Parse First AJSON File failed:", e);
-					new Notice("Debug Parse First AJSON File failed. Check console.");
+					parsed = parser.parseContent(raw, firstPath);
+				} catch (err) {
+					console.log("[VaultRagExplorerPlugin] parser THREW", { error: String(err), stack: (err as Error).stack });
+					new Notice("Parser threw — see console");
+					return;
 				}
+
+				const totalEmbeddings = (parsed?.sources?.reduce((a: number, s: any) => a + s.embeddings.length, 0) || 0) +
+										(parsed?.blocks?.reduce((a: number, b: any) => a + b.embeddings.length, 0) || 0);
+
+				console.log("[VaultRagExplorerPlugin] parser result", {
+					sources: parsed?.sources?.length ?? "MISSING",
+					blocks: parsed?.blocks?.length ?? "MISSING",
+					embeddings: totalEmbeddings,
+					sampleEmbedding: parsed?.sources?.[0]?.embeddings?.[0] ?? parsed?.blocks?.[0]?.embeddings?.[0] ?? null,
+				});
+
+				new Notice(`Parse result: ${totalEmbeddings} embeddings from first file`);
 			},
 		});
 

@@ -21,7 +21,13 @@ export class AjsonParser {
   // ---------------------------------------------------------------------------
 
   public parseContent(content: string, filePath: string): ParseResult {
-      console.log(`[AjsonParser] parseContent — filePath=${filePath} contentLength=${content.length}`);
+      console.log('[AjsonParser] parseFile ENTER', {
+        filePath,
+        rawLength: content?.length,
+        isUndefined: content === undefined,
+        isNull: content === null,
+      });
+
       const result: ParseResult = {
         sources: [],
         blocks: [],
@@ -29,6 +35,12 @@ export class AjsonParser {
         errors: [],
       };
       this.parseContentRaw(content, filePath, result);
+
+      console.log('[AjsonParser] parseFile EXIT', {
+        filePath,
+        embeddingsCount: result.sources.reduce((a, s) => a + s.embeddings.length, 0) + result.blocks.reduce((a, b) => a + b.embeddings.length, 0),
+      });
+
       return result;
   }
 
