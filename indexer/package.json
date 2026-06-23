@@ -1,0 +1,9 @@
+{
+  "name": "vault-rag-explorer-indexer",
+  "version": "1.0.0",
+  "description": "CLI indexer — reads SC .ajson files and writes smart_index.db",
+  "main": "build-index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
