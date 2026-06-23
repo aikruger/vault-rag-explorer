@@ -14,6 +14,8 @@ export interface VaultRagExplorerSettings {
 	defaultIncludeBlocks: boolean;
 	defaultCollapseBlocksBySource: boolean;
 	enableDebugLogging: boolean;
+	lastIndexBuild: number;
+	autoIndexOnLoad: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
@@ -26,6 +28,8 @@ export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
 	defaultIncludeBlocks: true,
 	defaultCollapseBlocksBySource: false,
 	enableDebugLogging: true,
+	lastIndexBuild: 0,
+	autoIndexOnLoad: false,
 };
 
 export interface QueryOptions {

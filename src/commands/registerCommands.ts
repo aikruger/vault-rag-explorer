@@ -213,18 +213,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 
 				console.log(`[Commands] Directory parse complete — sources=${allSources.length} blocks=${allBlocks.length} skipped=${skipped} errors=${allErrors.length}`);
 
-				const buildResult = await plugin.indexBuilder.buildIndex(
-					allSources,
-					allBlocks,
-					false // incremental by default
-				);
-
-				new Notice(
-					`Index built: ${buildResult.sourcesInserted + buildResult.sourcesUpdated} sources, ` +
-					`${buildResult.blocksInserted + buildResult.blocksUpdated} blocks, ` +
-					`${buildResult.embeddingsWritten} embeddings in ${buildResult.durationMs}ms`
-				);
-				console.log("[Commands] Build index complete", buildResult);
+					new Notice("Vault RAG Explorer: Indexing is now handled by the standalone CLI indexer. Please run `node indexer/build-index.js <vault-path>` from the terminal.");
+					console.log("[VaultRagExplorer] build index command retired — use standalone CLI indexer.");
 			} catch (e) {
 				const msg = `Index build failed: ${String(e)}`;
 				console.error("[Commands]", msg, e);
@@ -302,30 +292,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					return;
 				}
 
-				console.log("[VaultRagExplorer] Writing to database (force)…");
-				const buildResult = await plugin.indexBuilder.buildIndex(
-					allSources,
-					allBlocks,
-					true // forceRebuild: DO NOT skip unchanged records
-				);
-
-				console.log("[VaultRagExplorer] Index force build complete", buildResult);
-
-				const summary =
-					`Force index built in ${buildResult.durationMs}ms: ` +
-					`${buildResult.sourcesInserted} sources inserted, ` +
-					`${buildResult.blocksInserted} blocks inserted, ` +
-					`${buildResult.embeddingsWritten} embeddings written.`;
-
-				new Notice(`Vault RAG Explorer: ${summary}`);
-				console.log("[VaultRagExplorer]", summary);
-
-				if (buildResult.errors.length > 0) {
-					console.warn(
-						`[VaultRagExplorer] ${buildResult.errors.length} non-fatal index errors:`,
-						buildResult.errors.slice(0, 10)
-					);
-				}
+					new Notice("Vault RAG Explorer: Indexing is now handled by the standalone CLI indexer. Please run `node indexer/build-index.js <vault-path>` from the terminal.");
+					console.log("[VaultRagExplorer] force build index command retired — use standalone CLI indexer.");
 			} catch (e) {
 				const msg = `Index build failed: ${String(e)}`;
 				console.error("[VaultRagExplorer]", msg, e);
@@ -522,16 +490,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					const allSources: any[] = [];
 					const allBlocks: any[] = [];
 
-					for (const filePath of ajsonFiles) {
-						const fp = path.join(smartFolderPath, filePath);
-						const content = fs.readFileSync(fp, "utf8");
-						const result = parser.parseContent(content, fp);
-						allSources.push(...result.sources);
-						allBlocks.push(...result.blocks);
-					}
-
-					await plugin.indexBuilder.buildIndex(allSources, allBlocks, false);
-					console.log("[VaultRagExplorerPlugin] buildIndex() completed without throwing");
+						await plugin.indexBuilder.buildFromPath(smartFolderPath, ajsonFiles.map((f: string) => path.join(smartFolderPath, f)));
+						console.log("[VaultRagExplorerPlugin] buildFromPath() completed without throwing");
 				} catch (err) {
 					console.log("[VaultRagExplorerPlugin] buildIndex() THREW", { error: String(err), stack: (err as Error).stack });
 					new Notice("Vault RAG Explorer: Index build failed — see console");
@@ -549,6 +509,27 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 
 				new Notice(`Vault RAG Explorer: Index build complete — DB size: ${dbSize} bytes`);
 				console.log("[VaultRagExplorerPlugin] === INDEX BUILD END ===");
+			}
+		});
+
+		plugin.addCommand({
+			id: 'build-index',
+			name: 'Vault RAG Explorer: Build Index',
+			callback: async () => {
+				if (!plugin.settings.smartFolderPath) {
+					new Notice('Please set the Smart Connections folder in plugin settings first.');
+					return;
+				}
+				new Notice('Building index…');
+				try {
+					const result = await plugin.buildIndexFromSettings();
+					plugin.settings.lastIndexBuild = Date.now();
+					await plugin.saveSettings();
+					new Notice(`Done: ${result.embeddings} embeddings indexed`);
+				} catch (err) {
+					new Notice('Build failed: ' + (err as Error).message);
+					console.error('[VaultRagPlugin] command build-index failed', err);
+				}
 			}
 		});
 

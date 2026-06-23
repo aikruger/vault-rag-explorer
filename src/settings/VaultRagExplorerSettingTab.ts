@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, ButtonComponent } from "obsidian";
 import type VaultRagExplorerPlugin from "../plugin";
 
 const LOG_PREFIX = "[VaultRagExplorerSettingTab]";
@@ -16,54 +16,81 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		console.log(`${LOG_PREFIX} display`);
+		containerEl.createEl('h2', { text: 'Vault RAG Explorer' });
 
-		new Setting(containerEl).setName("Vault RAG Explorer Settings").setHeading();
-
-		containerEl.createEl("p", {
-			text: "Configure where Vault RAG Explorer should look for Smart Connections-derived files or related indexed data.",
-		});
-
+		// ── Smart Env Path ──────────────────────────────────────────────────────
 		new Setting(containerEl)
-			.setName("Smart folder")
-			.setDesc("Path to the folder containing Smart Connections exports, derived SQLite data, or related smart files.")
-			.addText((text) =>
+			.setName('Smart Connections folder')
+			.setDesc('Path to your .smart-env folder. Usually: <vault>/.smart-env')
+			.addText(text => {
 				text
-					.setPlaceholder("e.g. .smart-connections")
+					.setPlaceholder('/path/to/vault/.smart-env')
 					.setValue(this.plugin.settings.smartFolderPath)
 					.onChange(async (value) => {
-						const nextValue = value.trim();
-						console.log(`${LOG_PREFIX} smart folder updated`, nextValue);
-
-						this.plugin.settings.smartFolderPath = nextValue;
+						this.plugin.settings.smartFolderPath = value.trim();
 						await this.plugin.saveSettings();
+						console.log('[VaultRagSettings] smartFolderPath updated to:', value.trim());
+					});
+				text.inputEl.style.width = '100%';
+			})
+			.addButton(btn => {
+				btn.setButtonText('Auto-detect')
+					.onClick(async () => {
+						const detected = this.plugin.detectSmartEnvPath();
+						if (detected) {
+							this.plugin.settings.smartFolderPath = detected;
+							await this.plugin.saveSettings();
+							this.display(); // re-render to show new value
+							new Notice('Smart env folder detected: ' + detected);
+							console.log('[VaultRagSettings] auto-detected smartFolderPath:', detected);
+						} else {
+							new Notice('Could not auto-detect .smart-env folder. Please enter manually.');
+							console.log('[VaultRagSettings] auto-detect failed');
+						}
+					});
+			});
 
-						new Notice(
-							nextValue
-								? `Vault RAG Explorer Smart folder set to: ${nextValue}`
-								: "Vault RAG Explorer Smart folder cleared"
-						);
-					})
-			);
+		// ── Index Status ────────────────────────────────────────────────────────
+		const statusEl = containerEl.createEl('p', {
+			cls: 'setting-item-description',
+		});
+		this.renderIndexStatus(statusEl);
 
-		new Setting(containerEl)
-			.setName("Validate configuration")
-			.setDesc("Check whether a Smart folder path has been configured.")
-			.addButton((button) =>
-				button.setButtonText("Validate").onClick(() => {
-					const path = this.plugin.settings.smartFolderPath.trim();
-					console.log(`${LOG_PREFIX} validate clicked`, { path });
+		// ── Build Button ────────────────────────────────────────────────────────
+		const buildSetting = new Setting(containerEl)
+			.setName('Build index')
+			.setDesc('Parse all Smart Connections embeddings and write to the local SQLite database.');
 
-					if (!path) {
-						new Notice("No Smart folder configured yet.");
-						console.warn(`${LOG_PREFIX} validation failed: missing path`);
+		let buildBtn: ButtonComponent;
+		buildSetting.addButton(btn => {
+			buildBtn = btn;
+			btn.setButtonText('Build Index Now')
+				.setCta()
+				.onClick(async () => {
+					if (!this.plugin.settings.smartFolderPath) {
+						new Notice('Please set the Smart Connections folder path first.');
 						return;
 					}
+					btn.setButtonText('Building…').setDisabled(true);
+					statusEl.setText('Building index…');
+					console.log('[VaultRagSettings] starting index build');
 
-					new Notice(`Smart folder configured: ${path}`);
-					console.log(`${LOG_PREFIX} validation passed`, { path });
-				})
-			);
+					try {
+						const result = await this.plugin.buildIndexFromSettings();
+						this.plugin.settings.lastIndexBuild = Date.now();
+						await this.plugin.saveSettings();
+						this.renderIndexStatus(statusEl);
+						btn.setButtonText('Build Index Now').setDisabled(false);
+						new Notice(`Index built: ${result.embeddings} embeddings from ${result.sources} sources`);
+						console.log('[VaultRagSettings] index build complete', result);
+					} catch (err) {
+						btn.setButtonText('Build Index Now').setDisabled(false);
+						statusEl.setText('Build failed — check console for details');
+						new Notice('Index build failed: ' + (err as Error).message);
+						console.error('[VaultRagSettings] index build failed', err);
+					}
+				});
+		});
 
 		// Keep the other existing settings from the original tab for completeness
 		// (indexDbPath, etc.), but as requested we focus the exact file replacement.
@@ -122,5 +149,16 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+	}
+
+	private renderIndexStatus(el: HTMLElement): void {
+		const ts = this.plugin.settings.lastIndexBuild;
+		if (!ts) {
+			el.setText('Index not yet built.');
+			return;
+		}
+		const date = new Date(ts).toLocaleString();
+		el.setText(`Last built: ${date}`);
+		console.log('[VaultRagSettings] rendering status — lastBuild:', date);
 	}
 }

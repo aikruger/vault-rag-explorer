@@ -110,6 +110,56 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		return value;
 	}
 
+	detectSmartEnvPath(): string | null {
+		const fs = require('fs');
+		const path = require('path');
+		const basePath = (this.app.vault.adapter as any).basePath;
+
+		const candidates = [
+			path.join(basePath, '.smart-env', 'multi'),
+			path.join(basePath, '.smart-env'),
+			path.join(basePath, '.smart-connections'),
+		];
+
+		for (const candidate of candidates) {
+			if (fs.existsSync(candidate)) {
+				const files = fs.readdirSync(candidate).filter((f: string) => f.endsWith('.ajson'));
+				if (files.length > 0) {
+					console.log('[VaultRagPlugin] detectSmartEnvPath found:', candidate, `(${files.length} .ajson files)`);
+					return candidate;
+				}
+			}
+		}
+
+		console.log('[VaultRagPlugin] detectSmartEnvPath: no .ajson files found in any candidate path');
+		return null;
+	}
+
+	async buildIndexFromSettings(): Promise<{ sources: number; blocks: number; embeddings: number }> {
+		const fs   = require('fs');
+		const path = require('path');
+
+		const smartEnvPath = this.settings.smartFolderPath;
+		console.log('[VaultRagPlugin] buildIndexFromSettings — smartEnvPath:', smartEnvPath);
+
+		if (!fs.existsSync(smartEnvPath)) {
+			throw new Error(`Folder not found: ${smartEnvPath}`);
+		}
+
+		const ajsonFiles = fs.readdirSync(smartEnvPath)
+			.filter((f: string) => f.endsWith('.ajson'))
+			.map((f: string) => path.join(smartEnvPath, f));
+
+		console.log('[VaultRagPlugin] buildIndexFromSettings — files found:', ajsonFiles.length);
+
+		if (ajsonFiles.length === 0) {
+			throw new Error('No .ajson files found. Has Smart Connections finished embedding the vault?');
+		}
+
+		// Delegate to IndexBuilder with the validated path
+		return await this.indexBuilder.buildFromPath(smartEnvPath, ajsonFiles);
+	}
+
 	private async initialiseServices(): Promise<void> {
 		const smartFolderPath = this.getSmartFolderPath();
 

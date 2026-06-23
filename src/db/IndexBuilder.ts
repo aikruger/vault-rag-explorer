@@ -55,20 +55,35 @@ export class IndexBuilder {
    * skipped (no re-write needed). Pass `forceRebuild=true` to bypass the hash
    * check and overwrite every record.
    */
-  async buildIndex(
-    sources: ParsedSource[],
-    blocks: ParsedBlock[],
-    forceRebuild = false
-  ): Promise<IndexBuildResult> {
-    console.log('[IndexBuilder] buildIndex() ENTER');
+  async buildFromPath(
+    smartEnvPath: string,
+    ajsonFiles: string[]
+  ): Promise<{ sources: number; blocks: number; embeddings: number }> {
+    console.log('[IndexBuilder] buildFromPath ENTER — files:', ajsonFiles.length);
     const startTime = Date.now();
-    console.log(`${LOG_PREFIX} buildIndex started`, {
-      sourcesTotal: sources.length,
-      blocksTotal: blocks.length,
-      forceRebuild,
-    });
 
-    const result: IndexBuildResult = {
+    const rawDb = this.db.getDb();
+    if (!rawDb) {
+      throw new Error("Database is not open — cannot build index");
+    }
+
+    // Apply performance pragmas for the write session
+    rawDb.exec("PRAGMA journal_mode = WAL;");
+    rawDb.exec("PRAGMA synchronous = NORMAL;");
+    rawDb.exec("PRAGMA temp_store = MEMORY;");
+
+    let totalSources = 0;
+    let totalBlocks = 0;
+    let totalEmbeddings = 0;
+    let parseErrors = 0;
+    const CHUNK_SIZE = 20; // files per chunk before yielding
+
+    // Dynamic import to avoid top-level require errors if AjsonParser is isolated
+    const { AjsonParser } = await import("../parsers/AjsonParser");
+    const parser = new AjsonParser(this.enableDebugLogging);
+    const fs = require('fs');
+
+    const resultDummy: IndexBuildResult = {
       sourcesInserted: 0,
       sourcesUpdated: 0,
       sourcesSkipped: 0,
@@ -81,80 +96,66 @@ export class IndexBuilder {
       errors: [],
     };
 
-    const rawDb = this.db.getDb();
-    if (!rawDb) {
-      const msg = "Database is not open — cannot build index";
-      console.error(`${LOG_PREFIX} ${msg}`);
-      result.errors.push(msg);
-      return result;
+    for (let i = 0; i < ajsonFiles.length; i++) {
+      if (i > 0 && i % CHUNK_SIZE === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        console.log(`[IndexBuilder] yielded at file ${i}/${ajsonFiles.length}`);
+      }
+
+      const filePath = ajsonFiles[i];
+      if (!filePath) continue;
+      console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
+
+      try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        const parsed = parser.parseContent(raw, filePath);
+
+        const sourcesCount = parsed.sources.length;
+        const blocksCount = parsed.blocks.length;
+        const embeddingsCount = parsed.sources.reduce((a, s) => a + s.embeddings.length, 0) + parsed.blocks.reduce((a, b) => a + b.embeddings.length, 0);
+
+        console.log(`[IndexBuilder] parsed — sources:${sourcesCount} blocks:${blocksCount} embeddings:${embeddingsCount}`);
+
+        if (sourcesCount > 0) {
+          this.upsertSources(rawDb, parsed.sources, false, resultDummy);
+          totalSources += sourcesCount;
+        }
+        if (blocksCount > 0) {
+          this.upsertBlocks(rawDb, parsed.blocks, false, resultDummy);
+          totalBlocks += blocksCount;
+        }
+        totalEmbeddings += resultDummy.embeddingsWritten; // using upsert return logic implicitly via result dummy
+        // Note: totalEmbeddings tracks *written* embeddings based on actual upsert
+
+      } catch (err) {
+        parseErrors++;
+        console.error('[IndexBuilder] error processing file:', filePath, err);
+      }
     }
 
-    // Apply performance pragmas for the write session
-    rawDb.exec("PRAGMA journal_mode = WAL;");
-    rawDb.exec("PRAGMA synchronous = NORMAL;");
-    rawDb.exec("PRAGMA temp_store = MEMORY;");
-    console.log(`${LOG_PREFIX} Applied WAL pragmas`);
-
-    console.log('[IndexBuilder] schema tables', getRows(rawDb, `
-      SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
-    `));
-
-    console.log('[IndexBuilder] embeddings schema', getRows(rawDb, `
-      PRAGMA table_info(embeddings);
-    `));
-
-    console.log('[IndexBuilder] pre-insert DB counts', {
-      sources: getScalar(rawDb, 'SELECT COUNT(*) FROM sources'),
-      blocks: getScalar(rawDb, 'SELECT COUNT(*) FROM blocks'),
-      embeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
+    console.log('[IndexBuilder] parse complete', {
+      totalSources,
+      totalBlocks,
+      totalEmbeddings,
+      parseErrors,
     });
 
-    console.log('[IndexBuilder] beginning insert phase');
+    if (totalEmbeddings === 0 && resultDummy.embeddingsWritten === 0 && parseErrors === 0) {
+      console.log('[IndexBuilder] WARNING — zero embeddings parsed. Checking first file manually...');
+      if (ajsonFiles.length > 0) {
+        const raw = fs.readFileSync(ajsonFiles[0], 'utf8');
+        console.log('[IndexBuilder] first file length', raw.length);
+        console.log('[IndexBuilder] first file preview', raw.slice(0, 500).replace(/\n/g, '\\n'));
+      }
+    }
 
-    // --- Sources ---
-    this.upsertSources(rawDb, sources, forceRebuild, result);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    console.log('[IndexBuilder] yielding before db.persist() / export()');
 
-    // --- Blocks ---
-    this.upsertBlocks(rawDb, blocks, forceRebuild, result);
-
-    console.log('[IndexBuilder] insert phase complete');
-
-    console.log('[IndexBuilder] post-insert DB counts', {
-      sources: getScalar(rawDb, 'SELECT COUNT(*) FROM sources'),
-      blocks: getScalar(rawDb, 'SELECT COUNT(*) FROM blocks'),
-      embeddings: getScalar(rawDb, 'SELECT COUNT(*) FROM embeddings'),
-      embeddingsByModel: getRows(rawDb, `
-        SELECT model_name as modelname, COUNT(*) AS count
-        FROM embeddings
-        GROUP BY model_name
-        ORDER BY count DESC
-      `),
-      embeddingsByOwnerType: getRows(rawDb, `
-        SELECT owner_type as ownertype, COUNT(*) AS count
-        FROM embeddings
-        GROUP BY owner_type
-        ORDER BY count DESC
-      `),
-    });
-
-    result.durationMs = Date.now() - startTime;
     this.db.persist();
+    console.log('[IndexBuilder] buildFromPath EXIT — embeddings:', resultDummy.embeddingsWritten);
 
-    console.log(`${LOG_PREFIX} buildIndex complete`, {
-      sourcesInserted: result.sourcesInserted,
-      sourcesUpdated: result.sourcesUpdated,
-      sourcesSkipped: result.sourcesSkipped,
-      blocksInserted: result.blocksInserted,
-      blocksUpdated: result.blocksUpdated,
-      blocksSkipped: result.blocksSkipped,
-      embeddingsWritten: result.embeddingsWritten,
-      wikilinksWritten: result.wikilinksWritten,
-      durationMs: result.durationMs,
-      errors: result.errors.length,
-    });
-
-    console.log('[IndexBuilder] buildIndex() EXIT');
-    return result;
+    return { sources: totalSources, blocks: totalBlocks, embeddings: resultDummy.embeddingsWritten };
   }
 
   // ---------------------------------------------------------------------------
