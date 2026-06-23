@@ -61,7 +61,9 @@ export class EmbeddingReader {
         embedding: Uint8Array;
       };
 
-      const vec = new Float32Array(Buffer.from(row.embedding).buffer);
+      const buf = Buffer.from(row.embedding);
+      const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+
       if (vec.length !== row.dim) {
         console.warn(`${LOG_PREFIX} Skipping embedding id=${row.owner_id} — dim mismatch stored=${row.dim} actual=${vec.length}`);
         continue;
@@ -120,7 +122,9 @@ export class EmbeddingReader {
         embedding: Uint8Array;
       };
 
-      const vec = new Float32Array(Buffer.from(row.embedding).buffer);
+      const buf = Buffer.from(row.embedding);
+      const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+
       if (vec.length === row.dim) {
         resultRow = {
           ownerType: row.owner_type,
@@ -138,5 +142,35 @@ export class EmbeddingReader {
     stmt.free();
 
     return resultRow;
+  }
+
+  loadAllByDim(dim: number): StoredEmbedding[] {
+    const rawDb = this.db.getDb();
+    console.log('[EmbeddingReader] loadAllByDim', { dim });
+    const stmt = rawDb.prepare(`
+      SELECT owner_type, owner_id, model_name, dim, norm, is_normalized, embedding
+      FROM embeddings
+      WHERE dim = ?
+    `);
+    stmt.bind([dim]);
+    const results: StoredEmbedding[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as any;
+      const buf = Buffer.from(row.embedding);
+      const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+      if (vec.length !== row.dim) continue;
+      results.push({
+        ownerType: row.owner_type,
+        ownerId: row.owner_id,
+        modelName: row.model_name,
+        dim: row.dim,
+        norm: row.norm,
+        isNormalized: Boolean(row.is_normalized),
+        vec,
+      });
+    }
+    stmt.free();
+    console.log('[EmbeddingReader] loadAllByDim results', { dim, count: results.length });
+    return results;
   }
 }

@@ -84,7 +84,7 @@ export class QueryService {
   private scoreAndRank(queryVec: Float32Array, modelName: string, topK: number, wikilinkBoostEnabled: boolean): RetrievalHit[] {
     // 2. Load stored embeddings
     console.log('[QueryService] loading stored embeddings', { modelName });
-    const storedEmbeddings = this.embeddingReader.loadAll(modelName);
+    let storedEmbeddings = this.embeddingReader.loadAll(modelName);
 
     console.log('[QueryService] stored embeddings loaded', {
       modelName,
@@ -92,7 +92,13 @@ export class QueryService {
     });
 
     if (storedEmbeddings.length === 0) {
-      console.warn(`${LOG_PREFIX} No stored embeddings found for model ${modelName}`);
+      console.warn('[QueryService] No embeddings found by model name — falling back to dim match');
+      storedEmbeddings = this.embeddingReader.loadAllByDim(queryVec.length);
+      console.log('[QueryService] fallback dim match results', { dim: queryVec.length, count: storedEmbeddings.length });
+    }
+
+    if (storedEmbeddings.length === 0) {
+      console.warn(`${LOG_PREFIX} No stored embeddings found for model ${modelName} or dim ${queryVec.length}`);
       return [];
     }
 

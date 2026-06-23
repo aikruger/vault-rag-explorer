@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS blocks (
   line_end INTEGER,
   text TEXT,
   text_length INTEGER,
+  hash TEXT NOT NULL DEFAULT '',
   metadata_json TEXT,
   raw_json TEXT,
   FOREIGN KEY(source_id) REFERENCES sources(id)

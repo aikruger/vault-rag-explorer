@@ -64,6 +64,14 @@ export class Database {
             this.db.run(DB_SCHEMA_V1);
             console.log(`${LOG} Schema applied successfully`);
 
+            // Migration v2: add hash column to blocks if missing
+            try {
+              this.db.exec("ALTER TABLE blocks ADD COLUMN hash TEXT NOT NULL DEFAULT '';");
+              console.log('[Database] Migration v2 applied: added hash column to blocks table');
+            } catch (e) {
+              console.log('[Database] Migration v2 skipped: hash column already exists in blocks');
+            }
+
             this.persist();
             console.log(`${LOG} DB initialized successfully at`, this.dbPath);
         } catch (error) {

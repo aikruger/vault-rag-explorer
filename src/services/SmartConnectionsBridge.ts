@@ -142,20 +142,37 @@ export class SmartConnectionsBridge {
         return vec;
     }
 
+    private normaliseModelName(raw: string): string {
+        console.log('[SmartConnectionsBridge] raw model name from SC:', raw);
+        const MODEL_NAME_MAP: Record<string, string> = {
+            'TaylorAI/bge':           'TaylorAI/bge-micro-v2',
+            'bge-micro':              'TaylorAI/bge-micro-v2',
+            'bge-micro-v2':           'TaylorAI/bge-micro-v2',
+            'text-embedding-ada-002': 'text-embedding-ada-002',
+        };
+        const normalised = MODEL_NAME_MAP[raw] ?? raw;
+        console.log('[SmartConnectionsBridge] normalised model name:', normalised);
+        return normalised;
+    }
+
+    private resolveModelName(): string {
+        try {
+            const sc = this.getScPlugin();
+            const model = this.getEmbedModel(sc);
+            const name = model.model_key ?? model.model_name ?? model.config?.model_key ?? 'unknown';
+            return name;
+        } catch (err) {
+            console.warn(`${LOG_PREFIX} resolveModelName() failed:`, err);
+            return 'unknown';
+        }
+    }
+
     /**
      * Returns the model key SC is currently using, for
      * validating it matches the stored embeddings in smart_index.db.
      */
     getModelName(): string {
-        try {
-            const sc = this.getScPlugin();
-            const model = this.getEmbedModel(sc);
-            const name = model.model_key ?? model.model_name ?? model.config?.model_key ?? 'unknown';
-            console.log(`${LOG_PREFIX} getModelName() → ${name}`);
-            return name;
-        } catch (err) {
-            console.warn(`${LOG_PREFIX} getModelName() failed:`, err);
-            return 'unknown';
-        }
+        const raw = this.resolveModelName(); // existing logic unchanged
+        return this.normaliseModelName(raw);
     }
 }
