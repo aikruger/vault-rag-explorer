@@ -12,6 +12,7 @@ import { QueryService } from "../services/QueryService";
 /// <reference types="cytoscape" />
 import cytoscape from "cytoscape";
 import type { LockedNode } from "../services/LockedNodesService";
+import { EMPTY_PREFILTER, type PreFilterOptions } from "../services/PreFilterService";
 
 export class VaultRagExplorerView extends ItemView {
 	plugin: VaultRagExplorerPlugin;
@@ -25,6 +26,9 @@ export class VaultRagExplorerView extends ItemView {
 
 	private unsubscribeStore: (() => void) | null = null;
 	private cytoscapeInstance: cytoscape.Core | null = null;
+	private preFilter: PreFilterOptions = { ...EMPTY_PREFILTER };
+	private excludedSourceIds: Set<number> = new Set();
+	private excludedPaths: Set<string> = new Set();
 
 	constructor(leaf: WorkspaceLeaf, plugin: VaultRagExplorerPlugin) {
 		super(leaf);
@@ -116,6 +120,83 @@ export class VaultRagExplorerView extends ItemView {
 		}
 	}
 
+
+	private renderPreFilterPanel(container: HTMLElement): void {
+		const details = container.createEl('details', { cls: 'vre-prefilter-panel' });
+		details.createEl('summary', { text: '🔍 Scope filters (SQL pre-filter)' });
+
+		const grid = details.createEl('div', { cls: 'vre-prefilter-grid' });
+
+		const addRow = (label: string, placeholder: string, key: string, isExclude = false) => {
+			const row = grid.createEl('div', { cls: 'vre-prefilter-row' });
+			row.createEl('label', { text: label, cls: isExclude ? 'vre-label-exclude' : 'vre-label-include' });
+			const input = row.createEl('input', {
+				type: 'text',
+				placeholder,
+				cls: 'vre-prefilter-input',
+			}) as HTMLInputElement;
+			input.addEventListener('change', () => {
+				const values = input.value.split(',').map(v => v.trim()).filter(Boolean);
+				(this.preFilter as any)[key] = values;
+			});
+			return input;
+		};
+
+		const addDateRow = (label: string, key: 'createdAfter' | 'createdBefore') => {
+			const row = grid.createEl('div', { cls: 'vre-prefilter-row' });
+			row.createEl('label', { text: label, cls: 'vre-label-include' });
+			const input = row.createEl('input', { type: 'date', cls: 'vre-prefilter-input' }) as HTMLInputElement;
+			input.addEventListener('change', () => {
+				const ms = input.value ? new Date(input.value).getTime() : null;
+				(this.preFilter as any)[key] = ms;
+			});
+		};
+
+		const addPropertyRow = () => {
+			const row = grid.createEl('div', { cls: 'vre-prefilter-row' });
+			row.createEl('label', { text: 'Property (key=value, comma-separated)', cls: 'vre-label-include' });
+			const input = row.createEl('input', {
+				type: 'text',
+				placeholder: 'status=active, type=concept',
+				cls: 'vre-prefilter-input',
+			}) as HTMLInputElement;
+			input.addEventListener('change', () => {
+				this.preFilter.propertyFilters = input.value
+					.split(',')
+					.map(v => v.trim())
+					.filter(v => v.includes('='))
+					.map(v => {
+						const [key, ...rest] = v.split('=');
+						if (key) {
+							return { key: key.trim(), value: rest.join('=').trim() };
+						}
+						return undefined;
+					})
+					.filter((prop): prop is { key: string; value: string } => prop !== undefined);
+			});
+		};
+
+		grid.createEl('div', { text: '✅ Include only', cls: 'vre-prefilter-section-label' });
+		addRow('Folders (comma-separated)', 'Research/, Projects/Active', 'folderIncludes');
+		addRow('Tags (comma-separated)', 'concept, permanent', 'tagIncludes');
+		addRow('Filename contains', 'MOC, index', 'fileNameIncludes');
+		addRow('Filename exact', 'Home, Dashboard', 'fileNameExact');
+		addDateRow('Created after', 'createdAfter');
+		addDateRow('Created before', 'createdBefore');
+		addPropertyRow();
+
+		grid.createEl('div', { text: '❌ Exclude', cls: 'vre-prefilter-section-label' });
+		addRow('Folders (comma-separated)', 'Archive/, Templates/', 'folderExcludes', true);
+		addRow('Tags (comma-separated)', 'draft, inbox', 'tagExcludes', true);
+		addRow('Filename contains', 'temp, scratch', 'fileNameExcludes', true);
+
+		const resetBtn = details.createEl('button', { text: 'Reset filters', cls: 'vre-prefilter-reset' });
+		resetBtn.addEventListener('click', () => {
+			this.preFilter = { ...EMPTY_PREFILTER, propertyFilters: [] };
+			details.querySelectorAll('input').forEach((el: HTMLInputElement) => { el.value = ''; });
+		});
+	}
+
 	private renderQueryPanel(container: HTMLElement): void {
 		const panel = container.createDiv({ cls: "vre-panel vre-query-panel" });
 		panel.createEl("h3", { text: "Query" });
@@ -132,6 +213,8 @@ export class VaultRagExplorerView extends ItemView {
 				query: this.store.getState().currentQueryText,
 			});
 		});
+
+		this.renderPreFilterPanel(panel);
 
 		const controls = panel.createDiv({ cls: "vre-query-controls" });
 
@@ -312,7 +395,10 @@ export class VaultRagExplorerView extends ItemView {
 		try {
 			const response = await this.queryService.runQuery({
 				queryText: query,
-				options: state.queryOptions,
+				options: {
+					...state.queryOptions,
+					preFilterOptions: this.preFilter,
+				},
 			});
 
 			this.store.setState({ queryResponse: response });
@@ -329,34 +415,129 @@ export class VaultRagExplorerView extends ItemView {
 		}
 	}
 
+	private excludeNode(hit: RetrievalHit): void {
+		this.excludedSourceIds.add(hit.sourceId);
+		this.excludedPaths.add(hit.path);
+
+		if (!this.preFilter.excludedSourceIds.includes(hit.sourceId)) {
+			this.preFilter.excludedSourceIds.push(hit.sourceId);
+		}
+
+		const cy = (this as any).cy || this.cytoscapeInstance;
+		if (cy) {
+			const node = cy.getElementById(`${hit.nodeType}-${hit.nodeId}`);
+			if (node.length) {
+				node.addClass('excluded');
+			}
+		}
+
+		if ((this as any)._refreshExclusionList) (this as any)._refreshExclusionList();
+	}
+
+	private renderExclusionList(container: HTMLElement): void {
+		const details = container.createEl('details', { cls: 'vre-exclusion-panel' });
+		details.createEl('summary', { text: '🚫 Excluded files' });
+
+		const listEl = details.createEl('ul', { cls: 'vre-exclusion-list' });
+
+		const refresh = () => {
+			listEl.empty();
+			if (this.excludedPaths.size === 0) {
+				listEl.createEl('li', { text: 'None', cls: 'vre-exclusion-empty' });
+				return;
+			}
+			this.excludedPaths.forEach(path => {
+				const li = listEl.createEl('li', { cls: 'vre-exclusion-item' });
+				li.createEl('span', { text: path.replace('.md', ''), cls: 'vre-exclusion-path' });
+				const restore = li.createEl('button', { text: 'Restore', cls: 'vre-exclusion-restore' });
+				restore.addEventListener('click', () => {
+					this.excludedPaths.delete(path);
+					const rawDb = this.plugin.db.getDb();
+					const stmt = rawDb.prepare('SELECT id FROM sources WHERE path = $path');
+					stmt.bind({ $path: path });
+					if (stmt.step()) {
+						const id = (stmt.getAsObject() as { id: number }).id;
+						this.excludedSourceIds.delete(id);
+						this.preFilter.excludedSourceIds = this.preFilter.excludedSourceIds.filter((i: number) => i !== id);
+						const cy = (this as any).cy || this.cytoscapeInstance;
+						if (cy) cy.nodes().filter((n: any) => n.data('path') === path).removeClass('excluded');
+					}
+					stmt.free();
+					refresh();
+				});
+			});
+		};
+
+		(this as any)._refreshExclusionList = refresh;
+		refresh();
+	}
+
 	private renderMockResults(hits: RetrievalHit[]): void {
 		if (!this.resultsEl) return;
 		this.resultsEl.empty();
 
+		this.renderExclusionList(this.resultsEl);
+
 		hits.forEach((hit) => {
-			const card = this.resultsEl!.createDiv({ cls: "vre-result-card" });
-			card.createEl("div", {
-				text: `${hit.title} (${hit.nodeType})`,
-				cls: "vre-result-title",
-			});
-			card.createEl("div", {
-				text: hit.path,
-				cls: "vre-result-path",
-			});
-			card.createEl("div", {
-				text: hit.previewText ?? "",
-				cls: "vre-result-preview",
-			});
-			card.createEl("div", {
-				text: `Semantic: ${hit.semanticScore.toFixed(3)} | Wikilink: ${hit.wikilinkBoost.toFixed(3)} | Final: ${hit.finalScore.toFixed(3)}`,
-				cls: "vre-result-score",
-			});
+			this.renderHitItem(this.resultsEl!, hit);
+		});
+	}
 
-			const actions = card.createDiv({ cls: "vre-result-actions" });
+	private renderHitItem(container: HTMLElement, hit: RetrievalHit): void {
+		const item = container.createEl('div', { cls: 'vre-result-item' });
 
-			const inspectBtn = actions.createEl("button", { text: "Inspect" });
+		item.createEl('span', {
+			text: hit.finalScore.toFixed(3),
+			cls: 'vre-result-score',
+		});
+
+		const linkText = hit.nodeType === 'block' && hit.blockKey
+			? `${hit.path}#${hit.title}`
+			: hit.path.replace('.md', '');
+
+		const link = item.createEl('a', {
+			text: `[[${hit.title}]]`,
+			cls: 'internal-link vre-result-link',
+			href: linkText,
+		});
+		link.setAttribute('data-href', linkText);
+		link.setAttribute('data-type', 'link');
+		link.setAttribute('target', '_blank');
+		link.setAttribute('rel', 'noopener');
+
+		this.registerDomEvent(link, 'mouseover', (event: MouseEvent) => {
+			this.app.workspace.trigger('hover-link', {
+				event,
+				source: 'vault-rag-explorer',
+				hoverParent: this,
+				targetEl: link,
+				linktext: linkText,
+				sourcePath: hit.path,
+			});
+		});
+
+		if (hit.previewText) {
+			item.createEl('div', {
+				text: hit.previewText.slice(0, 120) + (hit.previewText.length > 120 ? '…' : ''),
+				cls: 'vre-result-preview',
+			});
+		}
+
+		const excludeBtn = item.createEl('button', {
+			text: '✕',
+			cls: 'vre-result-exclude',
+			title: 'Remove and exclude from further exploration',
+		});
+		excludeBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.excludeNode(hit);
+			item.remove();
+		});
+
+		const actions = item.createDiv({ cls: "vre-result-actions" });
+
+		const inspectBtn = actions.createEl("button", { text: "Inspect" });
 			inspectBtn.addEventListener("click", () => {
-				console.log("[VaultRagExplorerView] Inspect result", hit);
 				this.store.setState({ selectedNodeId: `${hit.nodeType}-${hit.nodeId}` });
 				this.renderMockInspector(hit);
 			});
@@ -368,7 +549,6 @@ export class VaultRagExplorerView extends ItemView {
 				if (this.plugin.lockedNodesService.isLocked(key)) {
 					this.plugin.lockedNodesService.unlock(key);
 					lockBtn.setText("Lock");
-					console.log("[View] Unlocked node", hit.path);
 					new Notice(`Unlocked: ${hit.title}`);
 				} else {
 					this.plugin.lockedNodesService.lock({
@@ -380,10 +560,8 @@ export class VaultRagExplorerView extends ItemView {
 						lockedAt: Date.now(),
 					});
 					lockBtn.setText("Locked ✓");
-					console.log("[View] Locked node", hit.path);
 					new Notice(`Locked: ${hit.title}`);
 				}
-				// Re-render inspector if it's currently showing this node
 				if (this.store.getState().selectedNodeId === key) {
 					this.renderMockInspector(hit);
 				}
@@ -391,9 +569,6 @@ export class VaultRagExplorerView extends ItemView {
 
 			const openBtn = actions.createEl("button", { text: "Open" });
 			openBtn.addEventListener("click", async () => {
-				console.log("[VaultRagExplorerView] Open file requested", {
-					path: hit.path,
-				});
 				const file = this.app.vault.getAbstractFileByPath(hit.path);
 				if (file) {
 					await this.app.workspace.getLeaf(true).openFile(file as never);
@@ -401,7 +576,6 @@ export class VaultRagExplorerView extends ItemView {
 					new Notice(`Could not find file: ${hit.path}`);
 				}
 			});
-		});
 	}
 
 	private renderMockInspector(hit: RetrievalHit | null): void {
@@ -587,20 +761,26 @@ export class VaultRagExplorerView extends ItemView {
 
 		const elements: cytoscape.ElementDefinition[] = [];
 
-		// Add hit nodes
 		for (const hit of hits) {
+			const locked = lockedNodes.some(n => n.nodeId === hit.nodeId && n.nodeType === hit.nodeType);
+			let mappedWidth = 16 + (hit.finalScore * (48 - 16));
+			if (hit.nodeType === 'block') mappedWidth = 10 + (hit.finalScore * (32 - 10));
+
 			elements.push({
 				data: {
 					id: `${hit.nodeType}-${hit.nodeId}`,
 					label: hit.title,
 					nodeType: hit.nodeType,
 					score: hit.finalScore,
-					locked: lockedNodes.some(n => n.nodeId === hit.nodeId && n.nodeType === hit.nodeType),
-				}
+					locked,
+					nodeWidth: mappedWidth,
+					nodeHeight: mappedWidth,
+					source: hit.sourceId,
+				},
+				classes: [locked ? 'locked' : '', this.excludedSourceIds.has(hit.sourceId) ? 'excluded' : ''].filter(Boolean).join(' ')
 			});
 		}
 
-		// Add wikilink edges — query from DB: source's outlinks that appear in results
 		const resultPaths = new Set(hits.map(h => h.path));
 		for (const hit of hits) {
 			const outlinks = this.getOutlinksForPath(hit.path);
@@ -625,21 +805,94 @@ export class VaultRagExplorerView extends ItemView {
 			container: this.graphEl,
 			elements,
 			style: [
-				{ selector: 'node', style: { label: 'data(label)', 'font-size': '10px', 'background-color': '#4a9eff' } },
-				{ selector: 'node[locked=1]', style: { 'background-color': '#ff6b35', 'border-width': 2 } },
-				{ selector: 'node[nodeType="block"]', style: { shape: 'rectangle' } },
-				{ selector: 'edge', style: { 'line-color': '#888', 'width': 1, 'target-arrow-shape': 'triangle' } },
+				{
+					selector: 'node',
+					style: {
+						'shape': 'ellipse',
+						'background-color': '#4a9eff',
+						'border-width': 2,
+						'border-color': '#ffffff',
+						'label': 'data(label)',
+						'color': '#ffffff',
+						'font-size': '11px' as unknown as number,
+						'text-valign': 'bottom',
+						'text-halign': 'center',
+						'text-margin-y': '4px' as unknown as number,
+						'text-outline-width': 2,
+						'text-outline-color': '#000000',
+						'width': 'data(nodeWidth)' as unknown as number,
+						'height': 'data(nodeHeight)' as unknown as number,
+					}
+				},
+				{
+					selector: 'node[nodeType="query"]',
+					style: {
+						'background-color': '#ffffff',
+						'border-color': '#4a9eff',
+						'border-width': 3,
+						'color': '#ffffff',
+						'width': 36 as unknown as number,
+						'height': 36 as unknown as number,
+					}
+				},
+				{
+					selector: 'node[nodeType="block"]',
+					style: {
+						'background-color': '#7b6af5',
+					}
+				},
+				{
+					selector: 'node.locked',
+					style: {
+						'border-color': '#ffd700',
+						'border-width': 4,
+					}
+				},
+				{
+					selector: 'node.excluded',
+					style: {
+						'display': 'none',
+					}
+				},
+				{
+					selector: 'edge[edgeType="semantic"]',
+					style: {
+						'line-color': '#4a9eff',
+						'opacity': 0.6,
+						'width': 'mapData(weight, 0, 1, 1, 4)' as unknown as number,
+						'curve-style': 'bezier',
+						'target-arrow-shape': 'none',
+					}
+				},
+				{
+					selector: 'edge[edgeType="wikilink"]',
+					style: {
+						'line-color': '#ffd700',
+						'opacity': 0.8,
+						'width': 2,
+						'curve-style': 'bezier',
+						'target-arrow-shape': 'triangle',
+						'target-arrow-color': '#ffd700',
+						'line-style': 'solid',
+					}
+				},
+				{
+					selector: 'edge.both-link',
+					style: {
+						'line-color': '#00c875',
+						'target-arrow-color': '#00c875',
+						'opacity': 0.9,
+						'width': 3,
+					}
+				},
 			],
 			layout: { name: 'cose', animate: false },
 		});
 
 		this.cytoscapeInstance?.on('tap', 'node', (event: cytoscape.EventObject) => {
-			console.log("[VaultRagExplorerView] tap event on node", event.target.id());
 			const nodeData = event.target.data();
-			console.log('[Graph] Node tapped', nodeData);
 			this.store.setState({ selectedNodeId: nodeData.id });
 
-			// Re-render inspector with selected node data
 			const response = this.store.getState().queryResponse;
 			if (response) {
 				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeData.id);
@@ -649,10 +902,39 @@ export class VaultRagExplorerView extends ItemView {
 			}
 		});
 
-		console.log("[VaultRagExplorerView] Cytoscape instance created", {
-			nodeCount: this.cytoscapeInstance?.nodes().length ?? 0,
+		this.cytoscapeInstance.edges().forEach((e: any) => {
+			const src = e.data('source');
+			const tgt = e.data('target');
+			const hasSemantic = this.cytoscapeInstance!.edges(`[source="${src}"][target="${tgt}"][edgeType="semantic"]`).length > 0;
+			const hasWikilink = this.cytoscapeInstance!.edges(`[source="${src}"][target="${tgt}"][edgeType="wikilink"]`).length > 0
+				|| this.cytoscapeInstance!.edges(`[source="${tgt}"][target="${src}"][edgeType="wikilink"]`).length > 0;
+			if (hasSemantic && hasWikilink) {
+				e.addClass('both-link');
+			}
 		});
 
-		console.log('[VaultRagExplorerView] Cytoscape graph rendered', { nodeCount: hits.length });
+		this.addCrossEdges(this.cytoscapeInstance, hits);
+	}
+
+	private async addCrossEdges(cy: any, hits: RetrievalHit[]): Promise<void> {
+		const THRESHOLD = 0.75;
+		const modelName = this.plugin.settings.embeddingModelName;
+
+		for (let i = 0; i < hits.length; i++) {
+			const vecA = this.plugin.embeddingReader.loadForOwner(hits[i]?.nodeType === 'note' ? 'source' : 'block', hits[i]?.nodeId as number, modelName);
+			if (!vecA) continue;
+			for (let j = i + 1; j < hits.length; j++) {
+				const vecB = this.plugin.embeddingReader.loadForOwner(hits[j]?.nodeType === 'note' ? 'source' : 'block', hits[j]?.nodeId as number, modelName);
+				if (!vecB) continue;
+				let dot = 0;
+				for (let k = 0; k < vecA.vec.length; k++) dot += (vecA.vec[k] || 0) * (vecB.vec[k] || 0);
+				if (dot >= THRESHOLD) {
+					const edgeId = `sem-${hits[i]?.nodeId}-${hits[j]?.nodeId}`;
+					if (!cy.getElementById(edgeId).length) {
+						cy.add({ data: { id: edgeId, source: `${hits[i]?.nodeType}-${hits[i]?.nodeId}`, target: `${hits[j]?.nodeType}-${hits[j]?.nodeId}`, edgeType: 'semantic', weight: dot } });
+					}
+				}
+			}
+		}
 	}
 }

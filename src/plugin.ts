@@ -17,6 +17,7 @@ import { VaultRagExplorerSettingTab } from "./settings/VaultRagExplorerSettingTa
 import { Database } from "./db/Database";
 import { AjsonParser } from "./parsers/AjsonParser";
 import { IndexBuilder } from "./db/IndexBuilder";
+import { PreFilterService } from "./services/PreFilterService";
 
 import { SmartConnectionsBridge } from "./services/SmartConnectionsBridge";
 import { EmbeddingReader } from "./db/EmbeddingReader";
@@ -38,6 +39,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public sessionService!: SessionService;
 	public ragExportService!: RagExportService;
 	public wikilinkExpander!: WikilinkExpander;
+	public preFilterService!: PreFilterService;
+	public queryService!: import("./services/QueryService").QueryService;
 
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} ✅ VaultRagExplorerPlugin.onload() — boilerplate replaced successfully`);
@@ -184,6 +187,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		this.embeddingReader = new EmbeddingReader(this.db);
 		console.log(`${LOG_PREFIX} EmbeddingReader ready`);
+
+		this.preFilterService = new PreFilterService(this.db);
+		console.log(`${LOG_PREFIX} PreFilterService initialised`);
+
+		const { QueryService } = require("./services/QueryService");
+		this.queryService = new QueryService(this.db, this.embeddingService, this.embeddingReader, this.preFilterService);
+		console.log(`${LOG_PREFIX} QueryService initialised`);
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);

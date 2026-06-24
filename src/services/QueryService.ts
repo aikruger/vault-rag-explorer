@@ -2,6 +2,7 @@ import type { QueryRequest, QueryResponse, RetrievalHit } from "../types";
 import type { Database } from "../db/Database";
 import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
+import type { PreFilterService, PreFilterOptions } from "./PreFilterService";
 
 const LOG_PREFIX = "[QueryService]";
 
@@ -9,7 +10,8 @@ export class QueryService {
   constructor(
     private db: Database,
     private embeddingService: SmartConnectionsBridge,
-    private embeddingReader: EmbeddingReader
+    private embeddingReader: EmbeddingReader,
+    private preFilterService?: PreFilterService
   ) {}
 
   // Optional dependency, to avoid circular dependencies or massive refactors late in the process.
@@ -39,7 +41,8 @@ export class QueryService {
         console.warn(`[QueryService] Model mismatch warning: SC is using ${scModel} but stored embeddings indexed with ${modelName}`);
     }
 
-    const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled);
+    const preFilterOptions = request.options.preFilterOptions ?? null;
+    const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled, preFilterOptions);
 
     const elapsed = Date.now() - startTime;
     console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
@@ -71,7 +74,7 @@ export class QueryService {
     }
 
     // Use seedEmb.vec as query vector. Expansion defaults to boost enabled.
-    const hits = this.scoreAndRank(seedEmb.vec, modelName, topK, true);
+    const hits = this.scoreAndRank(seedEmb.vec, modelName, topK, true, null);
 
     return {
       queryText: `Semantic expansion of ${ownerType} ${ownerId}`,
@@ -81,7 +84,12 @@ export class QueryService {
     };
   }
 
-  private scoreAndRank(queryVec: Float32Array, modelName: string, topK: number, wikilinkBoostEnabled: boolean): RetrievalHit[] {
+  private scoreAndRank(queryVec: Float32Array, modelName: string, topK: number, wikilinkBoostEnabled: boolean, preFilterOptions: PreFilterOptions | null): RetrievalHit[] {
+    let allowedSourceIds: Set<number> | null = null;
+    if (this.preFilterService && preFilterOptions) {
+      allowedSourceIds = this.preFilterService.getAllowedSourceIds(preFilterOptions);
+      console.log(`[QueryService] Pre-filter active — allowed sources: ${allowedSourceIds?.size ?? 'all'}`);
+    }
     // 2. Load stored embeddings
     console.log('[QueryService] loading stored embeddings', { modelName });
     let storedEmbeddings = this.embeddingReader.loadAll(modelName);
@@ -102,8 +110,16 @@ export class QueryService {
       return [];
     }
 
+    console.log(`[QueryService] After pre-filter: ${storedEmbeddings.length} embeddings to score`);
+
     // 3. Compute cosine similarity (dot product since vectors are normalized)
-    const scoredEmbeddings = storedEmbeddings.map(stored => {
+    const scoredEmbeddings = storedEmbeddings
+      .filter(stored => {
+        if (!allowedSourceIds) return true;
+        if (stored.ownerType === 'source') return allowedSourceIds.has(stored.ownerId);
+        return true;
+      })
+      .map(stored => {
       let score = 0;
       for (let i = 0; i < queryVec.length; i++) {
         score += (queryVec[i] || 0) * ((stored.vec[i]) || 0);
@@ -117,6 +133,7 @@ export class QueryService {
     const rawDb = this.db.getDb();
     const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = $id`);
     const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path FROM blocks WHERE id = $id`);
+    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
 
     // Milestone 6 wikilink boost calculation
     const lockedPaths = new Set<string>();
@@ -164,6 +181,18 @@ export class QueryService {
            path = row.block_path;
          }
          selectBlock.reset();
+
+         if (allowedSourceIds && emb.ownerType === 'block') {
+           selectSourceIdByPath.bind({ $path: path });
+           let parentId = -1;
+           if (selectSourceIdByPath.step()) {
+             parentId = (selectSourceIdByPath.getAsObject() as { id: number }).id;
+           }
+           selectSourceIdByPath.reset();
+           if (!allowedSourceIds.has(parentId)) {
+             return { ...emb, path, wikilinkBoost: 0, finalScore: -1 }; // mark for removal
+           }
+         }
       }
 
       const boost = boostedPaths.has(path) ? 0.05 : 0;
@@ -172,11 +201,11 @@ export class QueryService {
 
     // 4. Sort and slice
     finalScoredEmbeddings.sort((a, b) => b.finalScore - a.finalScore);
-    const topEmbeddings = finalScoredEmbeddings.slice(0, topK);
+    const topEmbeddings = finalScoredEmbeddings.filter(e => e.finalScore >= 0).slice(0, topK);
 
     const hits: RetrievalHit[] = [];
 
-    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
+
 
     for (const emb of topEmbeddings) {
       if (emb.ownerType === "source") {

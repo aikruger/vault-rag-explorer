@@ -41,6 +41,7 @@ export interface QueryOptions {
 	collapseBlocksBySource: boolean;
 	wikilinkBoostEnabled: boolean;
 	embeddingModelName: string;
+	preFilterOptions: import('./services/PreFilterService').PreFilterOptions | null;
 }
 
 export interface QueryRequest {
@@ -177,6 +178,7 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 	collapseBlocksBySource: DEFAULT_SETTINGS.defaultCollapseBlocksBySource,
 	wikilinkBoostEnabled: true,
 	embeddingModelName: DEFAULT_SETTINGS.embeddingModelName,
+	preFilterOptions: null,
 };
 
 export const EMPTY_WORKSPACE: GraphWorkspaceState = {
