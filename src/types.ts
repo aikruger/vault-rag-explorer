@@ -67,6 +67,8 @@ export interface RetrievalHit {
 	path: string;
 	title: string;
 	blockKey?: string;
+	lineStart?: number;
+	lineEnd?: number;
 	previewText?: string;
 	semanticScore: number;
 	wikilinkBoost: number;

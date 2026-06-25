@@ -535,6 +535,12 @@ export class VaultRagExplorerView extends ItemView {
 			});
 		});
 
+		this.registerDomEvent(link, 'click', (event: MouseEvent) => {
+			event.preventDefault();
+			console.log('[VaultRagExplorerView] internal-link clicked', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
+			this.openHit(hit);
+		});
+
 		if (hit.previewText) {
 			item.createEl('div', {
 				text: hit.previewText.slice(0, 120) + (hit.previewText.length > 120 ? '…' : ''),
@@ -588,12 +594,8 @@ export class VaultRagExplorerView extends ItemView {
 
 			const openBtn = actions.createEl("button", { text: "Open" });
 			openBtn.addEventListener("click", async () => {
-				const file = this.app.vault.getAbstractFileByPath(hit.path);
-				if (file) {
-					await this.app.workspace.getLeaf(true).openFile(file as never);
-				} else {
-					new Notice(`Could not find file: ${hit.path}`);
-				}
+				console.log('[VaultRagExplorerView] Open button clicked', { path: hit.path, lineStart: hit.lineStart });
+				await this.openHit(hit);
 			});
 	}
 
@@ -628,6 +630,11 @@ export class VaultRagExplorerView extends ItemView {
 		}
 
 		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
+
+		actions.createEl("button", { text: "Open File" }).addEventListener("click", async () => {
+			console.log('[VaultRagExplorerView] Inspector open file clicked', { path: hit.path, lineStart: hit.lineStart });
+			await this.openHit(hit);
+		});
 
 		const key = `${hit.nodeType}-${hit.nodeId}`;
 		const isLocked = this.plugin.lockedNodesService.isLocked(key);
@@ -956,5 +963,63 @@ export class VaultRagExplorerView extends ItemView {
 			}
 		}
 		console.log(`[VaultRagExplorerView] Cross-edge threshold=${THRESHOLD}, pairs checked=${hits.length * (hits.length-1) / 2}`);
+	}
+
+	private async openHit(hit: RetrievalHit): Promise<void> {
+		console.log('[VaultRagExplorerView] openHit entered', { path: hit.path, nodeType: hit.nodeType, lineStart: hit.lineStart });
+		console.log('[VaultRagExplorerView] openHit', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
+
+		const file = this.app.vault.getAbstractFileByPath(hit.path);
+		if (!file) {
+			new Notice(`File not found: ${hit.path}`);
+			console.warn('[VaultRagExplorerView] openHit: file not found', hit.path);
+			return;
+		}
+
+		// Search ALL workspace leaves across ALL windows for an existing open leaf
+		let existingLeaf: import('obsidian').WorkspaceLeaf | null = null;
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const view = leaf.view as { file?: { path: string } };
+			if (view?.file?.path === hit.path) {
+				existingLeaf = leaf;
+			}
+		});
+
+		// Use existing leaf or open a new one in the most recently used window
+		const leaf = existingLeaf ?? this.app.workspace.getLeaf('tab');
+
+		if (!existingLeaf) {
+			await leaf.openFile(file as import('obsidian').TFile);
+			console.log('[VaultRagExplorerView] openHit: opened in new tab', hit.path);
+		} else {
+			// Bring the window containing the existing leaf to focus
+			this.app.workspace.setActiveLeaf(leaf, { focus: true });
+			console.log('[VaultRagExplorerView] openHit: revealed existing leaf', hit.path);
+		}
+
+		// Scroll to the block if we have a line number
+		if (hit.nodeType === 'block' && hit.lineStart !== undefined && hit.lineStart > 0) {
+			// Wait a tick for the file to fully render before scrolling
+			setTimeout(() => {
+				try {
+					const view = leaf.view as {
+						editor?: {
+							setCursor: (pos: { line: number; ch: number }) => void;
+							scrollIntoView: (range: { from: { line: number; ch: number }; to: { line: number; ch: number } }, center: boolean) => void;
+						}
+					};
+					if (view.editor) {
+						const line = Math.max(0, (hit.lineStart ?? 1) - 1); // Convert 1-based to 0-based
+						view.editor.setCursor({ line, ch: 0 });
+						view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line: (hit.lineEnd ?? hit.lineStart ?? 1) - 1, ch: 0 } }, true);
+						console.log('[VaultRagExplorerView] openHit: scrolled to line', line);
+					} else {
+						console.warn('[VaultRagExplorerView] openHit: editor not available on leaf view, cannot scroll');
+					}
+				} catch (e) {
+					console.error('[VaultRagExplorerView] openHit: scroll failed', e);
+				}
+			}, 150);
+		}
 	}
 }

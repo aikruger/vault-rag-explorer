@@ -222,7 +222,7 @@ export class QueryService {
     // 5. Look up details from DB
     const rawDb = this.db.getDb();
     const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = $id`);
-    const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path FROM blocks WHERE id = $id`);
+    const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path, line_start, line_end FROM blocks WHERE id = $id`);
     const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
 
     // Milestone 6 wikilink boost calculation
@@ -319,7 +319,7 @@ export class QueryService {
       } else if (emb.ownerType === "block") {
         selectBlock.bind({ $id: emb.ownerId });
         if (selectBlock.step()) {
-          const row = selectBlock.getAsObject() as { block_key: string; block_label: string; text: string; block_path: string };
+          const row = selectBlock.getAsObject() as { block_key: string; block_label: string; text: string; block_path: string; line_start: number; line_end: number };
 
           selectSourceIdByPath.bind({ $path: row.block_path });
           let srcRow: { id: number } | undefined;
@@ -335,12 +335,15 @@ export class QueryService {
             path: row.block_path,
             title: row.block_label,
             blockKey: row.block_key,
+            lineStart: row.line_start,
+            lineEnd: row.line_end,
             previewText: row.text,
             semanticScore: emb.score,
             wikilinkBoost: emb.wikilinkBoost,
             finalScore: emb.finalScore,
             reasons: ["High semantic similarity at block level", ...(emb.wikilinkBoost > 0 ? ["Parent note linked to locked context"] : [])]
           });
+          console.log('[QueryService] block hit with line range', { blockKey: row.block_key, lineStart: row.line_start, lineEnd: row.line_end });
         }
         selectBlock.reset();
       }
