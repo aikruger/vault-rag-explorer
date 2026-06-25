@@ -43,28 +43,10 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public queryService!: import("./services/QueryService").QueryService;
 
 	async onload(): Promise<void> {
-		console.log(`[VaultRagExplorerPlugin] onload — detaching any stale leaves`);
-		// Must run before registerView to clear any previous registration
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
-
-		console.log(`${LOG_PREFIX} ✅ VaultRagExplorerPlugin.onload() — boilerplate replaced successfully`);
 		console.log(`${LOG_PREFIX} onload start`);
-		console.log(`${LOG_PREFIX} default settings loaded`, DEFAULT_SETTINGS);
 
 		await this.loadSettings();
-		console.log(`${LOG_PREFIX} onload using smart folder`, this.settings.smartFolderPath);
-
 		await this.initialiseServices();
-
-		this.registerView(
-			VIEW_TYPE_VAULT_RAG_EXPLORER,
-			(leaf: WorkspaceLeaf) => {
-				console.log(`${LOG_PREFIX} Creating view instance`);
-				this.view = new VaultRagExplorerView(leaf, this);
-				return this.view;
-			}
-		);
-		console.log(`${LOG_PREFIX} registerView complete`);
 
 		registerCommands(this);
 
@@ -77,15 +59,24 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} settings tab registered`);
 
 		this.app.workspace.onLayoutReady(() => {
-			console.log(`${LOG_PREFIX} layout ready`);
+			console.log(`${LOG_PREFIX} layout ready — detaching stale leaves then registering view`);
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
+
+			this.registerView(
+				VIEW_TYPE_VAULT_RAG_EXPLORER,
+				(leaf: WorkspaceLeaf) => {
+					console.log(`${LOG_PREFIX} Creating view instance`);
+					this.view = new VaultRagExplorerView(leaf, this);
+					return this.view;
+				}
+			);
+			console.log(`${LOG_PREFIX} registerView complete`);
+
 			if (!this.settings.smartFolderPath.trim()) {
-				console.warn(`${LOG_PREFIX} smartFolderPath is not configured — showing notice`);
 				new Notice(
 					"Vault RAG Explorer: set the Smart folder in Settings before running queries.",
 					8000
 				);
-			} else {
-				console.log(`${LOG_PREFIX} smartFolderPath configured:`, this.settings.smartFolderPath);
 			}
 		});
 
