@@ -52,6 +52,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		await this.initialiseServices();
 
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
+		console.log(`${LOG_PREFIX} detached stale leaves`);
 		this.registerView(
 			VIEW_TYPE_VAULT_RAG_EXPLORER,
 			(leaf: WorkspaceLeaf) => {
@@ -60,6 +62,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 				return this.view;
 			}
 		);
+		console.log(`${LOG_PREFIX} registerView complete`);
 
 		registerCommands(this);
 
@@ -88,7 +91,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	}
 
 	onunload(): void {
-		console.log(`${LOG_PREFIX} onunload`);
+		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 		this.view = null;
 		if (this.db) {
