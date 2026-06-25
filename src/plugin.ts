@@ -43,6 +43,9 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public queryService!: import("./services/QueryService").QueryService;
 
 	async onload(): Promise<void> {
+		console.log(`[VaultRagExplorerPlugin] onload — detaching any stale leaves`);
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
+
 		console.log(`${LOG_PREFIX} ✅ VaultRagExplorerPlugin.onload() — boilerplate replaced successfully`);
 		console.log(`${LOG_PREFIX} onload start`);
 		console.log(`${LOG_PREFIX} default settings loaded`, DEFAULT_SETTINGS);
@@ -52,8 +55,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		await this.initialiseServices();
 
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
-		console.log(`${LOG_PREFIX} detached stale leaves`);
+
 		this.registerView(
 			VIEW_TYPE_VAULT_RAG_EXPLORER,
 			(leaf: WorkspaceLeaf) => {
@@ -90,8 +92,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} onload complete`);
 	}
 
-	onunload(): void {
-		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
+	async onunload(): Promise<void> {
+		console.log(`[VaultRagExplorerPlugin] onunload — detaching leaves and closing db`);
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 		this.view = null;

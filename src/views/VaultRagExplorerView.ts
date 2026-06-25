@@ -26,7 +26,7 @@ export class VaultRagExplorerView extends ItemView {
 
 	private unsubscribeStore: (() => void) | null = null;
 	private cytoscapeInstance: cytoscape.Core | null = null;
-	private preFilter: PreFilterOptions = { ...EMPTY_PREFILTER };
+	private preFilter: PreFilterOptions = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
 	private excludedSourceIds: Set<number> = new Set();
 	private excludedPaths: Set<string> = new Set();
 
@@ -192,7 +192,7 @@ export class VaultRagExplorerView extends ItemView {
 
 		const resetBtn = details.createEl('button', { text: 'Reset filters', cls: 'vre-prefilter-reset' });
 		resetBtn.addEventListener('click', () => {
-			this.preFilter = { ...EMPTY_PREFILTER, propertyFilters: [] };
+			this.preFilter = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
 			details.querySelectorAll('input').forEach((el: HTMLInputElement) => { el.value = ''; });
 		});
 	}
@@ -936,5 +936,6 @@ export class VaultRagExplorerView extends ItemView {
 				}
 			}
 		}
+		console.log(`[VaultRagExplorerView] Cross-edge threshold=${THRESHOLD}, pairs checked=${hits.length * (hits.length-1) / 2}`);
 	}
 }

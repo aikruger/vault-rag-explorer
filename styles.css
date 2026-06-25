@@ -95,7 +95,7 @@
   gap: 5px;
   margin-top: 10px;
 }
-\n
+
 /* --- VaultRagExplorer View UX Enhancements --- */
 .vre-prefilter-panel { margin-bottom: 8px; border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 4px 8px; }
 .vre-prefilter-panel summary { cursor: pointer; font-size: 0.85em; color: var(--text-muted); user-select: none; }
