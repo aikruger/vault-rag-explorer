@@ -98,7 +98,7 @@ export class QueryService {
 
   if (options.scopeFilterEnabled) {
     console.log(`[QueryService] Building scope filter`, options);
-    let sql = `SELECT id, path, mtime, metadata FROM sources WHERE 1=1`;
+	  let sql = `SELECT id, path, mtime, metadata_json FROM sources WHERE 1=1`;
     const params: Record<string, unknown> = {};
 
     if (options.includeFolders.length > 0) {
@@ -142,12 +142,12 @@ export class QueryService {
     stmt.bind(params as any);
     allowedSourceIds = new Set<number>();
     while (stmt.step()) {
-      const row = stmt.getAsObject() as { id: number; path: string; metadata: string };
+		const row = stmt.getAsObject() as { id: number; path: string; metadata_json: string };
 
       // Tag filters (metadata is JSON string)
       if (options.includeTags.length > 0 || options.excludeTags.length > 0 || options.propertyFilters.length > 0) {
         let meta: Record<string, unknown> = {};
-        try { meta = JSON.parse(row.metadata || '{}'); } catch { meta = {}; }
+        try { meta = JSON.parse(row.metadata_json || '{}'); } catch { meta = {}; }
         const tags: string[] = Array.isArray(meta['tags']) ? (meta['tags'] as string[]) : [];
 
         if (options.includeTags.length > 0) {
