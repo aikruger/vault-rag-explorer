@@ -2,6 +2,7 @@ import type { QueryRequest, QueryResponse, RetrievalHit } from "../types";
 import type { Database } from "../db/Database";
 import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
+import type { PreFilterService, PreFilterOptions } from "./PreFilterService";
 
 const LOG_PREFIX = "[QueryService]";
 
@@ -9,7 +10,8 @@ export class QueryService {
   constructor(
     private db: Database,
     private embeddingService: SmartConnectionsBridge,
-    private embeddingReader: EmbeddingReader
+    private embeddingReader: EmbeddingReader,
+    private preFilterService?: PreFilterService
   ) {}
 
   // Optional dependency, to avoid circular dependencies or massive refactors late in the process.
@@ -39,7 +41,7 @@ export class QueryService {
         console.warn(`[QueryService] Model mismatch warning: SC is using ${scModel} but stored embeddings indexed with ${modelName}`);
     }
 
-    const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled);
+    const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled, request.options);
 
     const elapsed = Date.now() - startTime;
     console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
@@ -71,7 +73,8 @@ export class QueryService {
     }
 
     // Use seedEmb.vec as query vector. Expansion defaults to boost enabled.
-    const hits = this.scoreAndRank(seedEmb.vec, modelName, topK, true);
+    const { DEFAULT_QUERY_OPTIONS } = require("../types");
+    const hits = this.scoreAndRank(seedEmb.vec, modelName, topK, true, { ...DEFAULT_QUERY_OPTIONS, scopeFilterEnabled: false });
 
     return {
       queryText: `Semantic expansion of ${ownerType} ${ownerId}`,
@@ -81,11 +84,106 @@ export class QueryService {
     };
   }
 
-  private scoreAndRank(queryVec: Float32Array, modelName: string, topK: number, wikilinkBoostEnabled: boolean): RetrievalHit[] {
-    // 2. Load stored embeddings
-    console.log('[QueryService] loading stored embeddings', { modelName });
-    let storedEmbeddings = this.embeddingReader.loadAll(modelName);
+  private scoreAndRank(
+    queryVec: Float32Array,
+    modelName: string,
+    topK: number,
+    wikilinkBoostEnabled: boolean,
+    options: import("../types").QueryOptions
+  ): RetrievalHit[] {
 
+  // --- Build allowed source path set from SQL pre-filter ---
+  let rawDbFilter = this.db.getDb();
+  let allowedSourceIds: Set<number> | null = null;
+
+  if (options.scopeFilterEnabled) {
+    console.log(`[QueryService] Building scope filter`, options);
+	  let sql = `SELECT id, path, mtime, metadata_json FROM sources WHERE 1=1`;
+    const params: Record<string, unknown> = {};
+
+    if (options.includeFolders.length > 0) {
+      const clauses = options.includeFolders.map((f, i) => {
+        params[`$incFolder${i}`] = f;
+        return `path LIKE $incFolder${i} || '%'`;
+      });
+      sql += ` AND (${clauses.join(' OR ')})`;
+    }
+    if (options.excludeFolders.length > 0) {
+      options.excludeFolders.forEach((f, i) => {
+        params[`$excFolder${i}`] = f;
+        sql += ` AND path NOT LIKE $excFolder${i} || '%'`;
+      });
+    }
+    if (options.filenameContains.length > 0) {
+      const clauses = options.filenameContains.map((s, i) => {
+        params[`$fnContains${i}`] = `%${s}%`;
+        return `path LIKE $fnContains${i}`;
+      });
+      sql += ` AND (${clauses.join(' OR ')})`;
+    }
+    if (options.filenameExact.length > 0) {
+      const clauses = options.filenameExact.map((s, i) => {
+        params[`$fnExact${i}`] = s;
+        return `(path = $fnExact${i} OR path LIKE '%/' || $fnExact${i} || '.md')`;
+      });
+      sql += ` AND (${clauses.join(' OR ')})`;
+    }
+    if (options.createdAfter !== null) {
+      params[`$createdAfter`] = options.createdAfter;
+      sql += ` AND mtime >= $createdAfter`;
+    }
+    if (options.createdBefore !== null) {
+      params[`$createdBefore`] = options.createdBefore;
+      sql += ` AND mtime <= $createdBefore`;
+    }
+
+    console.log(`[QueryService] Scope SQL: ${sql}`, params);
+    const stmt = rawDbFilter.prepare(sql);
+    stmt.bind(params as any);
+    allowedSourceIds = new Set<number>();
+    while (stmt.step()) {
+		const row = stmt.getAsObject() as { id: number; path: string; metadata_json: string };
+
+      // Tag filters (metadata is JSON string)
+      if (options.includeTags.length > 0 || options.excludeTags.length > 0 || options.propertyFilters.length > 0) {
+        let meta: Record<string, unknown> = {};
+        try { meta = JSON.parse(row.metadata_json || '{}'); } catch { meta = {}; }
+        const tags: string[] = Array.isArray(meta['tags']) ? (meta['tags'] as string[]) : [];
+
+        if (options.includeTags.length > 0) {
+          const hasAll = options.includeTags.every(t => tags.includes(t));
+          if (!hasAll) { continue; }
+        }
+        if (options.excludeTags.length > 0) {
+          const hasAny = options.excludeTags.some(t => tags.includes(t));
+          if (hasAny) { continue; }
+        }
+        if (options.propertyFilters.length > 0) {
+          const passAll = options.propertyFilters.every(pf => {
+            const val = meta[pf.key];
+            return val !== undefined && String(val) === pf.value;
+          });
+          if (!passAll) { continue; }
+        }
+      }
+
+      allowedSourceIds.add(row.id);
+    }
+    stmt.free();
+    console.log(`[QueryService] Scope filter allowed ${allowedSourceIds.size} sources`);
+  }
+
+  // --- Filter stored embeddings by allowed source IDs ---
+  let storedEmbeddings = this.embeddingReader.loadAll(modelName);
+  if (allowedSourceIds !== null) {
+    storedEmbeddings = storedEmbeddings.filter(e => {
+      if (e.ownerType === 'source') return allowedSourceIds!.has(e.ownerId);
+      // For blocks, we need the block's parent source id — skip if we can't determine
+      return true; // block filtering by parent source handled below after path lookup
+    });
+  }
+
+    console.log('[QueryService] loading stored embeddings', { modelName });
     console.log('[QueryService] stored embeddings loaded', {
       modelName,
       count: storedEmbeddings.length,
@@ -102,8 +200,16 @@ export class QueryService {
       return [];
     }
 
+    console.log(`[QueryService] After pre-filter: ${storedEmbeddings.length} embeddings to score`);
+
     // 3. Compute cosine similarity (dot product since vectors are normalized)
-    const scoredEmbeddings = storedEmbeddings.map(stored => {
+    const scoredEmbeddings = storedEmbeddings
+      .filter(stored => {
+        if (!allowedSourceIds) return true;
+        if (stored.ownerType === 'source') return allowedSourceIds.has(stored.ownerId);
+        return true;
+      })
+      .map(stored => {
       let score = 0;
       for (let i = 0; i < queryVec.length; i++) {
         score += (queryVec[i] || 0) * ((stored.vec[i]) || 0);
@@ -117,6 +223,7 @@ export class QueryService {
     const rawDb = this.db.getDb();
     const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = $id`);
     const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path FROM blocks WHERE id = $id`);
+    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
 
     // Milestone 6 wikilink boost calculation
     const lockedPaths = new Set<string>();
@@ -164,6 +271,18 @@ export class QueryService {
            path = row.block_path;
          }
          selectBlock.reset();
+
+         if (allowedSourceIds && emb.ownerType === 'block') {
+           selectSourceIdByPath.bind({ $path: path });
+           let parentId = -1;
+           if (selectSourceIdByPath.step()) {
+             parentId = (selectSourceIdByPath.getAsObject() as { id: number }).id;
+           }
+           selectSourceIdByPath.reset();
+           if (!allowedSourceIds.has(parentId)) {
+             return { ...emb, path, wikilinkBoost: 0, finalScore: -1 }; // mark for removal
+           }
+         }
       }
 
       const boost = boostedPaths.has(path) ? 0.05 : 0;
@@ -172,11 +291,11 @@ export class QueryService {
 
     // 4. Sort and slice
     finalScoredEmbeddings.sort((a, b) => b.finalScore - a.finalScore);
-    const topEmbeddings = finalScoredEmbeddings.slice(0, topK);
+    const topEmbeddings = finalScoredEmbeddings.filter(e => e.finalScore >= 0).slice(0, topK);
 
     const hits: RetrievalHit[] = [];
 
-    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
+
 
     for (const emb of topEmbeddings) {
       if (emb.ownerType === "source") {

@@ -17,6 +17,7 @@ import { VaultRagExplorerSettingTab } from "./settings/VaultRagExplorerSettingTa
 import { Database } from "./db/Database";
 import { AjsonParser } from "./parsers/AjsonParser";
 import { IndexBuilder } from "./db/IndexBuilder";
+import { PreFilterService } from "./services/PreFilterService";
 
 import { SmartConnectionsBridge } from "./services/SmartConnectionsBridge";
 import { EmbeddingReader } from "./db/EmbeddingReader";
@@ -38,25 +39,14 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public sessionService!: SessionService;
 	public ragExportService!: RagExportService;
 	public wikilinkExpander!: WikilinkExpander;
+	public preFilterService!: PreFilterService;
+	public queryService!: import("./services/QueryService").QueryService;
 
 	async onload(): Promise<void> {
-		console.log(`${LOG_PREFIX} ✅ VaultRagExplorerPlugin.onload() — boilerplate replaced successfully`);
 		console.log(`${LOG_PREFIX} onload start`);
-		console.log(`${LOG_PREFIX} default settings loaded`, DEFAULT_SETTINGS);
 
 		await this.loadSettings();
-		console.log(`${LOG_PREFIX} onload using smart folder`, this.settings.smartFolderPath);
-
 		await this.initialiseServices();
-
-		this.registerView(
-			VIEW_TYPE_VAULT_RAG_EXPLORER,
-			(leaf: WorkspaceLeaf) => {
-				console.log(`${LOG_PREFIX} Creating view instance`);
-				this.view = new VaultRagExplorerView(leaf, this);
-				return this.view;
-			}
-		);
 
 		registerCommands(this);
 
@@ -69,15 +59,24 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} settings tab registered`);
 
 		this.app.workspace.onLayoutReady(() => {
-			console.log(`${LOG_PREFIX} layout ready`);
+			console.log(`${LOG_PREFIX} layout ready — detaching stale leaves then registering view`);
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
+
+			this.registerView(
+				VIEW_TYPE_VAULT_RAG_EXPLORER,
+				(leaf: WorkspaceLeaf) => {
+					console.log(`${LOG_PREFIX} Creating view instance`);
+					this.view = new VaultRagExplorerView(leaf, this);
+					return this.view;
+				}
+			);
+			console.log(`${LOG_PREFIX} registerView complete`);
+
 			if (!this.settings.smartFolderPath.trim()) {
-				console.warn(`${LOG_PREFIX} smartFolderPath is not configured — showing notice`);
 				new Notice(
 					"Vault RAG Explorer: set the Smart folder in Settings before running queries.",
 					8000
 				);
-			} else {
-				console.log(`${LOG_PREFIX} smartFolderPath configured:`, this.settings.smartFolderPath);
 			}
 		});
 
@@ -85,7 +84,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	}
 
 	onunload(): void {
-		console.log(`${LOG_PREFIX} onunload`);
+		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 		this.view = null;
 		if (this.db) {
@@ -184,6 +184,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		this.embeddingReader = new EmbeddingReader(this.db);
 		console.log(`${LOG_PREFIX} EmbeddingReader ready`);
+
+		this.preFilterService = new PreFilterService(this.db);
+		console.log(`${LOG_PREFIX} PreFilterService initialised`);
+
+		const { QueryService } = require("./services/QueryService");
+		this.queryService = new QueryService(this.db, this.embeddingService, this.embeddingReader, this.preFilterService);
+		console.log(`${LOG_PREFIX} QueryService initialised`);
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);

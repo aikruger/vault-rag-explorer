@@ -41,6 +41,18 @@ export interface QueryOptions {
 	collapseBlocksBySource: boolean;
 	wikilinkBoostEnabled: boolean;
 	embeddingModelName: string;
+	preFilterOptions: import('./services/PreFilterService').PreFilterOptions | null;
+
+	scopeFilterEnabled: boolean;
+	includeFolders: string[];       // e.g. ["Research/", "Projects/Active"]
+	excludeFolders: string[];
+	includeTags: string[];          // matched against sources.metadata JSON
+	excludeTags: string[];
+	filenameContains: string[];     // substring match on path
+	filenameExact: string[];        // exact filename match (no extension)
+	createdAfter: number | null;    // Unix ms
+	createdBefore: number | null;
+	propertyFilters: { key: string; value: string }[];  // metadata key=value pairs
 }
 
 export interface QueryRequest {
@@ -177,6 +189,18 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 	collapseBlocksBySource: DEFAULT_SETTINGS.defaultCollapseBlocksBySource,
 	wikilinkBoostEnabled: true,
 	embeddingModelName: DEFAULT_SETTINGS.embeddingModelName,
+	preFilterOptions: null,
+
+	scopeFilterEnabled: true,
+	includeFolders: [],
+	excludeFolders: [],
+	includeTags: [],
+	excludeTags: [],
+	filenameContains: [],
+	filenameExact: [],
+	createdAfter: null,
+	createdBefore: null,
+	propertyFilters: [],
 };
 
 export const EMPTY_WORKSPACE: GraphWorkspaceState = {
