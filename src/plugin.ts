@@ -43,6 +43,9 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public queryService!: import("./services/QueryService").QueryService;
 
 	async onload(): Promise<void> {
+		console.log(`[VaultRagExplorerPlugin] onload — detaching any stale leaves`);
+		// Must run before registerView to clear any previous registration
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 		console.log(`${LOG_PREFIX} ✅ VaultRagExplorerPlugin.onload() — boilerplate replaced successfully`);
 		console.log(`${LOG_PREFIX} onload start`);
@@ -52,10 +55,6 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} onload using smart folder`, this.settings.smartFolderPath);
 
 		await this.initialiseServices();
-
-		// Must run before registerView to clear any stale registration from previous load
-		console.log(`${LOG_PREFIX} detaching stale leaves before registerView`);
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 		this.registerView(
 			VIEW_TYPE_VAULT_RAG_EXPLORER,
