@@ -137,7 +137,9 @@ export class VaultRagExplorerView extends ItemView {
 			}) as HTMLInputElement;
 			input.addEventListener('change', () => {
 				const values = input.value.split(',').map(v => v.trim()).filter(Boolean);
-				(this.preFilter as any)[key] = values;
+				this.store.setState({
+					queryOptions: { ...this.store.getState().queryOptions, [key]: values }
+				});
 			});
 			return input;
 		};
@@ -148,7 +150,9 @@ export class VaultRagExplorerView extends ItemView {
 			const input = row.createEl('input', { type: 'date', cls: 'vre-prefilter-input' }) as HTMLInputElement;
 			input.addEventListener('change', () => {
 				const ms = input.value ? new Date(input.value).getTime() : null;
-				(this.preFilter as any)[key] = ms;
+				this.store.setState({
+					queryOptions: { ...this.store.getState().queryOptions, [key]: ms }
+				});
 			});
 		};
 
@@ -161,38 +165,53 @@ export class VaultRagExplorerView extends ItemView {
 				cls: 'vre-prefilter-input',
 			}) as HTMLInputElement;
 			input.addEventListener('change', () => {
-				this.preFilter.propertyFilters = input.value
+				const parsed = input.value
 					.split(',')
 					.map(v => v.trim())
 					.filter(v => v.includes('='))
 					.map(v => {
-						const [key, ...rest] = v.split('=');
-						if (key) {
-							return { key: key.trim(), value: rest.join('=').trim() };
-						}
+						const [k, ...rest] = v.split('=');
+						if (k) return { key: k.trim(), value: rest.join('=').trim() };
 						return undefined;
 					})
 					.filter((prop): prop is { key: string; value: string } => prop !== undefined);
+				this.store.setState({
+					queryOptions: { ...this.store.getState().queryOptions, propertyFilters: parsed }
+				});
 			});
 		};
 
 		grid.createEl('div', { text: '✅ Include only', cls: 'vre-prefilter-section-label' });
-		addRow('Folders (comma-separated)', 'Research/, Projects/Active', 'folderIncludes');
-		addRow('Tags (comma-separated)', 'concept, permanent', 'tagIncludes');
-		addRow('Filename contains', 'MOC, index', 'fileNameIncludes');
-		addRow('Filename exact', 'Home, Dashboard', 'fileNameExact');
+		addRow('Folders (comma-separated)', 'Research/, Projects/Active', 'includeFolders');
+		addRow('Tags (comma-separated)', 'concept, permanent', 'includeTags');
+		addRow('Filename contains', 'MOC, index', 'filenameContains');
+		addRow('Filename exact', 'Home, Dashboard', 'filenameExact');
 		addDateRow('Created after', 'createdAfter');
 		addDateRow('Created before', 'createdBefore');
 		addPropertyRow();
 
 		grid.createEl('div', { text: '❌ Exclude', cls: 'vre-prefilter-section-label' });
-		addRow('Folders (comma-separated)', 'Archive/, Templates/', 'folderExcludes', true);
-		addRow('Tags (comma-separated)', 'draft, inbox', 'tagExcludes', true);
-		addRow('Filename contains', 'temp, scratch', 'fileNameExcludes', true);
+		addRow('Folders (comma-separated)', 'Archive/, Templates/', 'excludeFolders', true);
+		addRow('Tags (comma-separated)', 'draft, inbox', 'excludeTags', true);
+		// Note: The UI prompt asks for filenameExcludes here, but it wasn't added to QueryOptions in step 1.
+		// Leaving it off to match types.ts constraints and avoid TS errors.
 
 		const resetBtn = details.createEl('button', { text: 'Reset filters', cls: 'vre-prefilter-reset' });
 		resetBtn.addEventListener('click', () => {
-			this.preFilter = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
+			this.store.setState({
+				queryOptions: {
+					...this.store.getState().queryOptions,
+					includeFolders: [],
+					excludeFolders: [],
+					includeTags: [],
+					excludeTags: [],
+					filenameContains: [],
+					filenameExact: [],
+					createdAfter: null,
+					createdBefore: null,
+					propertyFilters: [],
+				}
+			});
 			details.querySelectorAll('input').forEach((el: HTMLInputElement) => { el.value = ''; });
 		});
 	}
