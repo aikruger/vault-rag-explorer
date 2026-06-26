@@ -9,9 +9,25 @@ import {
 } from "../types";
 import { RagExplorerStore } from "../state/RagExplorerStore";
 import { QueryService } from "../services/QueryService";
-/// <reference types="cytoscape" />
-import cytoscape from "cytoscape";
+import * as d3 from "d3";
 import type { LockedNode } from "../services/LockedNodesService";
+
+interface D3Node extends d3.SimulationNodeDatum {
+  id: string;
+  label: string;
+  nodeType: "note" | "block";
+  score: number;
+  locked: boolean;
+  radius: number;
+  connectionCount: number;
+  color: string;
+}
+
+interface D3Link extends d3.SimulationLinkDatum<D3Node> {
+  id: string;
+  score: number;       // semantic similarity score for distance mapping
+  edgeType: "semantic" | "wikilink";
+}
 import { EMPTY_PREFILTER, type PreFilterOptions } from "../services/PreFilterService";
 
 export class VaultRagExplorerView extends ItemView {
@@ -25,7 +41,9 @@ export class VaultRagExplorerView extends ItemView {
 	private inspectorEl: HTMLDivElement | null = null;
 
 	private unsubscribeStore: (() => void) | null = null;
-	private cytoscapeInstance: cytoscape.Core | null = null;
+	private d3Simulation: d3.Simulation<D3Node, D3Link> | null = null;
+	private d3Canvas: HTMLCanvasElement | null = null;
+	private d3Pinned = false;
 	private preFilter: PreFilterOptions = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
 	private excludedSourceIds: Set<number> = new Set();
 	private excludedPaths: Set<string> = new Set();
@@ -272,10 +290,9 @@ export class VaultRagExplorerView extends ItemView {
 			const sessionId = state.activeSessionId || `session-${Date.now()}`;
 
 			const graphPositions: Record<string, {x: number, y: number}> = {};
-			if (this.cytoscapeInstance) {
-				this.cytoscapeInstance.nodes().forEach((node: cytoscape.NodeSingular) => {
-					console.log("[VaultRagExplorerView] saveSession node position", node.id());
-					graphPositions[node.id()] = { ...node.position() };
+			if (this.d3Simulation) {
+				this.d3Simulation.nodes().forEach(n => {
+					graphPositions[n.id] = { x: n.x ?? 0, y: n.y ?? 0 };
 				});
 			}
 
@@ -320,17 +337,13 @@ export class VaultRagExplorerView extends ItemView {
 				await this.runQuery(); // Re-run query to populate hits
 
 				// Re-apply layout positions if possible
-				if (this.cytoscapeInstance) {
-					this.cytoscapeInstance.nodes().forEach((node: cytoscape.NodeSingular) => {
-						const pos = session.graphPositions[node.id()];
-						console.log("[VaultRagExplorerView] loadSession restoring node position", {
-							id: node.id(),
-							hasPosition: !!pos,
-						});
-						if (pos) {
-							node.position(pos);
-						}
+				if (this.d3Simulation) {
+					this.d3Simulation.nodes().forEach(n => {
+						const pos = session.graphPositions[n.id];
+						if (pos) { n.fx = pos.x; n.fy = pos.y; }
+						console.log('[VaultRagExplorerView] loadSession restoring node', { id: n.id, hasPos: !!pos });
 					});
+					this.d3Simulation.alpha(0.3).restart();
 				}
 				new Notice(`Session loaded: ${session.id}`);
 			}
@@ -442,13 +455,7 @@ export class VaultRagExplorerView extends ItemView {
 			this.preFilter.excludedSourceIds.push(hit.sourceId);
 		}
 
-		const cy = (this as any).cy || this.cytoscapeInstance;
-		if (cy) {
-			const node = cy.getElementById(`${hit.nodeType}-${hit.nodeId}`);
-			if (node.length) {
-				node.addClass('excluded');
-			}
-		}
+		// Removed cytoscape instance exclusion logic
 
 		if ((this as any)._refreshExclusionList) (this as any)._refreshExclusionList();
 	}
@@ -478,8 +485,7 @@ export class VaultRagExplorerView extends ItemView {
 						const id = (stmt.getAsObject() as { id: number }).id;
 						this.excludedSourceIds.delete(id);
 						this.preFilter.excludedSourceIds = this.preFilter.excludedSourceIds.filter((i: number) => i !== id);
-						const cy = (this as any).cy || this.cytoscapeInstance;
-						if (cy) cy.nodes().filter((n: any) => n.data('path') === path).removeClass('excluded');
+						// Removed cytoscape instance exclusion logic
 					}
 					stmt.free();
 					refresh();
@@ -693,6 +699,7 @@ export class VaultRagExplorerView extends ItemView {
 		});
 
 		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
+
 			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", hit);
 			const expander = this.plugin.wikilinkExpander;
 			const expansions = expander.expandFrom(hit.path);
@@ -702,45 +709,36 @@ export class VaultRagExplorerView extends ItemView {
 				return;
 			}
 
-			if (this.cytoscapeInstance) {
-				const elementsToAdd: cytoscape.ElementDefinition[] = [];
+			const state = this.store.getState();
+			const currentResponse = state.queryResponse;
+			if (currentResponse) {
+				const mergedHits = [...currentResponse.hits];
 				for (const expansion of expansions) {
 					const dstId = this.getSourceIdForPath(expansion.path);
 					if (dstId) {
-						// Add node if not exists
-						if (this.cytoscapeInstance.$id(`note-${dstId}`).length === 0) {
-							elementsToAdd.push({
-								data: {
-									id: `note-${dstId}`,
-									label: expansion.path,
-									nodeType: "note",
-									score: 0,
-									locked: false
-								}
-							});
-						}
-
-						// Add edge
-						const edgeId = `edge-expansion-${hit.nodeId}-${dstId}-${expansion.direction}`;
-						if (this.cytoscapeInstance.$id(edgeId).length === 0) {
-							const source = expansion.direction === "outbound" ? `${hit.nodeType}-${hit.nodeId}` : `note-${dstId}`;
-							const target = expansion.direction === "outbound" ? `note-${dstId}` : `${hit.nodeType}-${hit.nodeId}`;
-
-							elementsToAdd.push({
-								data: {
-									id: edgeId,
-									source,
-									target,
-									edgeType: "wikilink"
-								}
-							});
+						if (!mergedHits.some(h => h.nodeId === dstId && h.nodeType === "note")) {
+							mergedHits.push({
+								nodeId: dstId,
+								nodeType: "note",
+								path: expansion.path,
+								title: expansion.path,
+								finalScore: 0,
+									sourceId: dstId,
+									semanticScore: 0,
+									wikilinkBoost: 0,
+									reasons: []
+								});
 						}
 					}
 				}
-				this.cytoscapeInstance.add(elementsToAdd);
-				this.cytoscapeInstance.layout({ name: 'cose', animate: true }).run();
+
+				const newResponse = { ...currentResponse, hits: mergedHits };
+				this.store.setState({ queryResponse: newResponse });
+				this.renderMockResults(newResponse.hits);
+				this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
 				new Notice(`Expanded with ${expansions.length} wikilinks`);
 			}
+
 		});
 	}
 
@@ -775,186 +773,342 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 	private renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): void {
-		if (!this.graphEl) return;
-		this.graphEl.empty();
+  if (!this.graphEl) return;
+  this.graphEl.empty();
 
-		const elements: cytoscape.ElementDefinition[] = [];
+  console.log('[VaultRagExplorerView] renderGraph D3 start', { hitCount: hits.length });
 
-		for (const hit of hits) {
-			const locked = lockedNodes.some(n => n.nodeId === hit.nodeId && n.nodeType === hit.nodeType);
-			let mappedWidth = 16 + (hit.finalScore * (48 - 16));
-			if (hit.nodeType === 'block') mappedWidth = 10 + (hit.finalScore * (32 - 10));
+  // Stop any existing simulation
+  if (this.d3Simulation) {
+    this.d3Simulation.stop();
+    this.d3Simulation = null;
+  }
 
-			elements.push({
-				data: {
-					id: `${hit.nodeType}-${hit.nodeId}`,
-					label: hit.title,
-					nodeType: hit.nodeType,
-					score: hit.finalScore,
-					locked,
-					nodeWidth: mappedWidth,
-					nodeHeight: mappedWidth,
-					source: hit.sourceId,
-				},
-				classes: [locked ? 'locked' : '', this.excludedSourceIds.has(hit.sourceId) ? 'excluded' : ''].filter(Boolean).join(' ')
-			});
-		}
+  // --- Build nodes ---
+  const lockedSet = new Set(lockedNodes.map(n => `${n.nodeType}-${n.nodeId}`));
+  const connectionCounts: Record<string, number> = {};
 
-		const resultPaths = new Set(hits.map(h => h.path));
-		for (const hit of hits) {
-			const outlinks = this.getOutlinksForPath(hit.path);
-			for (const dst of outlinks) {
-				if (resultPaths.has(dst)) {
-					const dstId = this.getSourceIdForPath(dst);
-					if (dstId) {
-						elements.push({
-							data: {
-								id: `edge-${hit.nodeId}-${dst}`,
-								source: `${hit.nodeType}-${hit.nodeId}`,
-								target: `note-${dstId}`,
-								edgeType: 'wikilink',
-							}
-						});
-					}
-				}
-			}
-		}
+  // Count connections per node (semantic edges: all pairs with score above threshold)
+  const SEMANTIC_EDGE_THRESHOLD = 0.3;
+  const semanticEdges: D3Link[] = [];
+  for (let i = 0; i < hits.length; i++) {
+    for (let j = i + 1; j < hits.length; j++) {
+      const a = hits[i] as RetrievalHit, b = hits[j] as RetrievalHit;
+      // Use average of both scores as proxy for pair similarity
+      const pairScore = (a.finalScore + b.finalScore) / 2;
+      if (pairScore >= SEMANTIC_EDGE_THRESHOLD) {
+        const srcId = `${a.nodeType}-${a.nodeId}`;
+        const tgtId = `${b.nodeType}-${b.nodeId}`;
+        semanticEdges.push({ id: `sem-${srcId}-${tgtId}`, source: srcId, target: tgtId, score: pairScore, edgeType: 'semantic' });
+        connectionCounts[srcId] = (connectionCounts[srcId] || 0) + 1;
+        connectionCounts[tgtId] = (connectionCounts[tgtId] || 0) + 1;
+      }
+    }
+  }
 
-		this.cytoscapeInstance = cytoscape({
-			container: this.graphEl,
-			elements,
-			style: [
-				{
-					selector: 'node',
-					style: {
-						'shape': 'ellipse',
-						'background-color': '#4a9eff',
-						'border-width': 2,
-						'border-color': '#ffffff',
-						'label': 'data(label)',
-						'color': '#ffffff',
-						'font-size': '11px' as unknown as number,
-						'text-valign': 'bottom',
-						'text-halign': 'center',
-						'text-margin-y': '4px' as unknown as number,
-						'text-outline-width': 2,
-						'text-outline-color': '#000000',
-						'width': 'data(nodeWidth)' as unknown as number,
-						'height': 'data(nodeHeight)' as unknown as number,
-					}
-				},
-				{
-					selector: 'node[nodeType="query"]',
-					style: {
-						'background-color': '#ffffff',
-						'border-color': '#4a9eff',
-						'border-width': 3,
-						'color': '#ffffff',
-						'width': 36 as unknown as number,
-						'height': 36 as unknown as number,
-					}
-				},
-				{
-					selector: 'node[nodeType="block"]',
-					style: {
-						'background-color': '#7b6af5',
-					}
-				},
-				{
-					selector: 'node.locked',
-					style: {
-						'border-color': '#ffd700',
-						'border-width': 4,
-					}
-				},
-				{
-					selector: 'node.excluded',
-					style: {
-						'display': 'none',
-					}
-				},
-				{
-					selector: 'edge[edgeType="semantic"]',
-					style: {
-						'line-color': '#4a9eff',
-						'opacity': 0.6,
-						'width': 'mapData(weight, 0, 1, 1, 4)' as unknown as number,
-						'curve-style': 'bezier',
-						'target-arrow-shape': 'none',
-					}
-				},
-				{
-					selector: 'edge[edgeType="wikilink"]',
-					style: {
-						'line-color': '#ffd700',
-						'opacity': 0.8,
-						'width': 2,
-						'curve-style': 'bezier',
-						'target-arrow-shape': 'triangle',
-						'target-arrow-color': '#ffd700',
-						'line-style': 'solid',
-					}
-				},
-				{
-					selector: 'edge.both-link',
-					style: {
-						'line-color': '#00c875',
-						'target-arrow-color': '#00c875',
-						'opacity': 0.9,
-						'width': 3,
-					}
-				},
-			],
-			layout: { name: 'cose', animate: false },
-		});
+  // Wikilink edges from DB
+  const wikilinkEdges: D3Link[] = [];
+  const resultPaths = new Set(hits.map(h => h.path));
+  for (const hit of hits) {
+    const srcId = `${hit.nodeType}-${hit.nodeId}`;
+    const outlinks = this.getOutlinksForPath(hit.path);
+    for (const dst of outlinks) {
+      if (resultPaths.has(dst)) {
+        const dstDbId = this.getSourceIdForPath(dst);
+        if (dstDbId) {
+          const tgtId = `note-${dstDbId}`;
+          const edgeId = `wl-${srcId}-${tgtId}`;
+          if (!wikilinkEdges.some(e => e.id === edgeId)) {
+            wikilinkEdges.push({ id: edgeId, source: srcId, target: tgtId, score: 0.5, edgeType: 'wikilink' });
+            connectionCounts[srcId] = (connectionCounts[srcId] || 0) + 1;
+            connectionCounts[tgtId] = (connectionCounts[tgtId] || 0) + 1;
+          }
+        }
+      }
+    }
+  }
 
-		this.cytoscapeInstance?.on('tap', 'node', (event: cytoscape.EventObject) => {
-			const nodeData = event.target.data();
-			this.store.setState({ selectedNodeId: nodeData.id });
+  const allLinks: D3Link[] = [...semanticEdges, ...wikilinkEdges];
 
-			const response = this.store.getState().queryResponse;
-			if (response) {
-				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeData.id);
-				if (hit) {
-					this.renderMockInspector(hit);
-				}
-			}
-		});
+  const nodes: D3Node[] = hits.map(hit => {
+    const id = `${hit.nodeType}-${hit.nodeId}`;
+    const conns = connectionCounts[id] || 0;
+    const BASE_R = 8, GROWTH = 2.5, MAX_R = 40;
+    const radius = Math.min(BASE_R + conns * GROWTH, MAX_R);
+    const isLocked = lockedSet.has(id);
+    const color = isLocked ? '#ff6b35' : (hit.nodeType === 'block' ? '#7c8594' : '#4a9eff');
+    return { id, label: hit.title, nodeType: hit.nodeType, score: hit.finalScore, locked: isLocked, radius, connectionCount: conns, color };
+  });
 
-		this.cytoscapeInstance.edges().forEach((e: any) => {
-			const src = e.data('source');
-			const tgt = e.data('target');
-			const hasSemantic = this.cytoscapeInstance!.edges(`[source="${src}"][target="${tgt}"][edgeType="semantic"]`).length > 0;
-			const hasWikilink = this.cytoscapeInstance!.edges(`[source="${src}"][target="${tgt}"][edgeType="wikilink"]`).length > 0
-				|| this.cytoscapeInstance!.edges(`[source="${tgt}"][target="${src}"][edgeType="wikilink"]`).length > 0;
-			if (hasSemantic && hasWikilink) {
-				e.addClass('both-link');
-			}
-		});
+  console.log('[VaultRagExplorerView] D3 graph nodes/links', { nodes: nodes.length, links: allLinks.length });
 
-		this.addCrossEdges(this.cytoscapeInstance, hits);
-	}
+  // --- Create canvas ---
+  const canvas = document.createElement('canvas');
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.display = 'block';
+  this.graphEl.appendChild(canvas);
+  this.d3Canvas = canvas;
 
-	private async addCrossEdges(cy: any, hits: RetrievalHit[]): Promise<void> {
-		const THRESHOLD = 0.75;
-		const modelName = this.plugin.settings.embeddingModelName;
+  // --- Canvas toolbar ---
+  const toolbar = this.graphEl.createDiv({ cls: 'vre-graph-toolbar' });
+  const pinBtn = toolbar.createEl('button', { text: '📌 Pin Layout' });
+  const resetBtn = toolbar.createEl('button', { text: '⟳ Reset' });
 
-		for (let i = 0; i < hits.length; i++) {
-			const vecA = this.plugin.embeddingReader.loadForOwner(hits[i]?.nodeType === 'note' ? 'source' : 'block', hits[i]?.nodeId as number, modelName);
-			if (!vecA) continue;
-			for (let j = i + 1; j < hits.length; j++) {
-				const vecB = this.plugin.embeddingReader.loadForOwner(hits[j]?.nodeType === 'note' ? 'source' : 'block', hits[j]?.nodeId as number, modelName);
-				if (!vecB) continue;
-				let dot = 0;
-				for (let k = 0; k < vecA.vec.length; k++) dot += (vecA.vec[k] || 0) * (vecB.vec[k] || 0);
-				if (dot >= THRESHOLD) {
-					const edgeId = `sem-${hits[i]?.nodeId}-${hits[j]?.nodeId}`;
-					if (!cy.getElementById(edgeId).length) {
-						cy.add({ data: { id: edgeId, source: `${hits[i]?.nodeType}-${hits[i]?.nodeId}`, target: `${hits[j]?.nodeType}-${hits[j]?.nodeId}`, edgeType: 'semantic', weight: dot } });
-					}
-				}
-			}
-		}
-		console.log(`[VaultRagExplorerView] Cross-edge threshold=${THRESHOLD}, pairs checked=${hits.length * (hits.length-1) / 2}`);
-	}
+  const ctx = canvas.getContext('2d')!;
+
+  function resizeCanvas() {
+    const rect = (canvas.parentElement as HTMLElement).getBoundingClientRect();
+    canvas.width = rect.width || 400;
+    canvas.height = (rect.height - 40) || 300;  // subtract toolbar height
+    console.log('[D3Graph] Canvas resized', { w: canvas.width, h: canvas.height });
+    ticked();
+  }
+
+  // --- D3 zoom/pan state ---
+  let transform = d3.zoomIdentity;
+
+  const zoomBehavior = d3.zoom<HTMLCanvasElement, unknown>()
+    .scaleExtent([0.05, 10])
+    .filter(event => {
+      // Don't zoom when clicking on a node
+      if (event.type === 'mousedown' || event.type === 'wheel') {
+        const [mx, my] = d3.pointer(event, canvas);
+        const [sx, sy] = transform.invert([mx, my]);
+        return findNodeAt(sx, sy) === null;
+      }
+      return true;
+    })
+    .on('zoom', (event) => {
+      transform = event.transform;
+      ticked();
+    });
+
+  d3.select(canvas).call(zoomBehavior);
+
+  // --- Distance scale: higher score = shorter distance (closer) ---
+  const allScores = allLinks.map(l => l.score);
+  const minScore = d3.min(allScores) ?? 0.3;
+  const maxScore = d3.max(allScores) ?? 1.0;
+  const distanceScale = d3.scalePow()
+    .exponent(2)
+    .domain([minScore, maxScore])
+    .range([350, 40])
+    .clamp(true);
+
+  // --- Simulation ---
+  const simulation = d3.forceSimulation<D3Node>(nodes)
+    .velocityDecay(0.7)
+    .force('charge', d3.forceManyBody<D3Node>().strength(n => -(80 + n.radius * 5)))
+    .force('link', d3.forceLink<D3Node, D3Link>(allLinks)
+      .id(d => d.id)
+      .distance(link => distanceScale(link.score))
+      .strength(0.4)
+    )
+    .force('center', d3.forceCenter(0, 0))
+    .force('collision', d3.forceCollide<D3Node>().radius(n => n.radius + 4))
+    .on('tick', ticked);
+
+  this.d3Simulation = simulation;
+
+  // Pre-warm
+  for (let i = 0; i < 80; i++) simulation.tick();
+  simulation.alphaTarget(0).restart();
+
+  // --- Helper: find node at simulation coords ---
+  function findNodeAt(sx: number, sy: number): D3Node | null {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      if (!n) continue;
+      const dx = sx - (n.x ?? 0), dy = sy - (n.y ?? 0);
+      if (dx * dx + dy * dy <= n.radius * n.radius) return n;
+    }
+    return null;
+  }
+
+  // --- Hover & selection state ---
+  let hoveredNode: D3Node | null = null;
+  let selectedNode: D3Node | null = null;
+
+  // --- Draw loop ---
+  function ticked() {
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(transform.x + W / 2, transform.y + H / 2);
+    ctx.scale(transform.k, transform.k);
+
+    // Compute connected sets for hover highlight
+    const connectedNodes = new Set<D3Node>();
+    const connectedLinks = new Set<D3Link>();
+    if (hoveredNode) {
+      connectedNodes.add(hoveredNode);
+      allLinks.forEach(link => {
+        const s = link.source as D3Node, t = link.target as D3Node;
+        if (s === hoveredNode || t === hoveredNode) {
+          connectedLinks.add(link);
+          connectedNodes.add(s);
+          connectedNodes.add(t);
+        }
+      });
+    }
+
+    // Draw links
+    allLinks.forEach(link => {
+      const s = link.source as D3Node, t = link.target as D3Node;
+      if (!s.x || !t.x) return;
+      const alpha = hoveredNode ? (connectedLinks.has(link) ? 0.9 : 0.05) : (link.edgeType === 'wikilink' ? 0.6 : 0.35);
+      ctx.beginPath();
+      ctx.strokeStyle = link.edgeType === 'wikilink'
+        ? `rgba(255, 165, 0, ${alpha})`
+        : `rgba(76, 158, 255, ${alpha})`;
+      ctx.lineWidth = link.edgeType === 'wikilink' ? 1.5 : 1;
+      ctx.moveTo(s.x ?? 0, s.y ?? 0);
+      ctx.lineTo(t.x ?? 0, t.y ?? 0);
+      ctx.stroke();
+    });
+
+    // Draw nodes
+    nodes.forEach(node => {
+      const x = node.x ?? 0, y = node.y ?? 0;
+      const alpha = hoveredNode ? (connectedNodes.has(node) ? 1.0 : 0.15) : 1.0;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      if (node.nodeType === 'block') {
+        // Rounded rect for blocks
+        const r = node.radius, s = r * 0.3;
+        ctx.roundRect(x - r, y - r, r * 2, r * 2, s);
+      } else {
+        ctx.arc(x, y, node.radius, 0, 2 * Math.PI);
+      }
+      ctx.fillStyle = node.color;
+      ctx.fill();
+
+      // Selection / hover ring
+      if (node === selectedNode || node === hoveredNode) {
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = node === selectedNode ? '#ffd700' : '#ffffff';
+        ctx.stroke();
+      }
+      // Lock indicator ring
+      if (node.locked) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ff6b35';
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1.0;
+    });
+
+    // Labels for hovered or selected
+    const labelNodes = new Set<D3Node>();
+    if (hoveredNode) labelNodes.add(hoveredNode);
+    if (selectedNode) labelNodes.add(selectedNode);
+    labelNodes.forEach(node => {
+      const x = node.x ?? 0, y = node.y ?? 0;
+      ctx.font = `${Math.max(9, 10 / transform.k)}px sans-serif`;
+      ctx.fillStyle = '#e0e0e0';
+      ctx.textAlign = 'center';
+      const maxLen = 30;
+      const label = node.label.length > maxLen ? node.label.slice(0, maxLen) + '…' : node.label;
+      ctx.fillText(label, x, y - node.radius - 4);
+    });
+
+    ctx.restore();
+  }
+
+  // --- Drag behaviour ---
+  let dragNode: D3Node | null = null;
+  let dragStartSim: [number, number] | null = null;
+  let dragStartNodePos: { x: number, y: number } | null = null;
+
+  d3.select(canvas)
+    .on('mousedown', (event: MouseEvent) => {
+      const [mx, my] = d3.pointer(event, canvas);
+      const [sx, sy] = transform.invert([mx - canvas.width / 2, my - canvas.height / 2]);
+      dragNode = findNodeAt(sx, sy);
+      if (dragNode) {
+        dragStartSim = [sx, sy];
+        dragStartNodePos = { x: dragNode.x ?? 0, y: dragNode.y ?? 0 };
+        simulation.alphaTarget(0.15).restart();
+        console.log('[D3Graph] drag start', dragNode.id);
+        event.stopPropagation();
+      }
+    })
+    .on('mousemove', (event: MouseEvent) => {
+      const [mx, my] = d3.pointer(event, canvas);
+      const [sx, sy] = transform.invert([mx - canvas.width / 2, my - canvas.height / 2]);
+      if (dragNode && dragStartSim && dragStartNodePos) {
+        dragNode.fx = dragStartNodePos.x + (sx - dragStartSim[0]);
+        dragNode.fy = dragStartNodePos.y + (sy - dragStartSim[1]);
+      } else {
+        const prev = hoveredNode;
+        hoveredNode = findNodeAt(sx, sy);
+        canvas.style.cursor = hoveredNode ? 'pointer' : 'default';
+        if (hoveredNode !== prev) ticked();
+      }
+    })
+    .on('mouseup', (event: MouseEvent) => {
+      if (dragNode) {
+        console.log('[D3Graph] drag end', dragNode.id);
+        if (!this.d3Pinned) {
+          dragNode.fx = null;
+          dragNode.fy = null;
+        }
+        simulation.alphaTarget(0);
+        dragNode = null;
+        dragStartSim = null;
+        dragStartNodePos = null;
+      }
+    })
+    .on('click', (event: MouseEvent) => {
+      const [mx, my] = d3.pointer(event, canvas);
+      const [sx, sy] = transform.invert([mx - canvas.width / 2, my - canvas.height / 2]);
+      const clicked = findNodeAt(sx, sy);
+      if (clicked) {
+        selectedNode = clicked;
+        console.log('[D3Graph] node clicked', clicked.id);
+        this.store.setState({ selectedNodeId: clicked.id });
+        const response = this.store.getState().queryResponse;
+        if (response) {
+          const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === clicked.id);
+          if (hit) this.renderMockInspector(hit);
+        }
+        ticked();
+      }
+    });
+
+  // --- Toolbar buttons ---
+  pinBtn.addEventListener('click', () => {
+    this.d3Pinned = !this.d3Pinned;
+    if (this.d3Pinned) {
+      simulation.alpha(0).alphaTarget(0);
+      nodes.forEach(n => { n.fx = n.x; n.fy = n.y; });
+      pinBtn.textContent = '📍 Unpin Layout';
+      console.log('[D3Graph] pinned');
+    } else {
+      nodes.forEach(n => { n.fx = null; n.fy = null; });
+      simulation.alpha(0.5).restart();
+      pinBtn.textContent = '📌 Pin Layout';
+      console.log('[D3Graph] unpinned');
+    }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    nodes.forEach(n => { n.fx = null; n.fy = null; n.x = undefined; n.y = undefined; });
+    this.d3Pinned = false;
+    pinBtn.textContent = '📌 Pin Layout';
+    simulation.alpha(1).restart();
+    console.log('[D3Graph] reset');
+  });
+
+  // --- Resize observer ---
+  const ro = new ResizeObserver(() => {
+    requestAnimationFrame(resizeCanvas);
+  });
+  ro.observe(this.graphEl);
+
+  requestAnimationFrame(() => setTimeout(resizeCanvas, 0));
+
+  console.log('[VaultRagExplorerView] D3 graph rendered', { nodes: nodes.length, links: allLinks.length });
+}
 }

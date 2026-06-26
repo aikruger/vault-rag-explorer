@@ -15,7 +15,7 @@
 	"license": "0-BSD",
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
-		"@types/cytoscape": "^3.21.9",
+		"@types/d3": "^7.4.3",
 		"@types/node": "^22.15.17",
 		"@types/sql.js": "^1.4.11",
 		"esbuild": "0.25.5",
@@ -28,7 +28,7 @@
 		"typescript-eslint": "^8.59.1"
 	},
 	"dependencies": {
-		"cytoscape": "^3.34.0",
+		"d3": "^7.9.0",
 		"sql.js": "^1.14.1"
 	}
 }
