@@ -50,6 +50,8 @@ export interface QueryOptions {
 	excludeTags: string[];
 	filenameContains: string[];     // substring match on path
 	filenameExact: string[];        // exact filename match (no extension)
+	filenameExcludes: string[];     // substring match exclusion on path/title
+	filePathExcludes: string[];     // explicit full vault paths to exclude (e.g. "Research/MyNote.md")
 	createdAfter: number | null;    // Unix ms
 	createdBefore: number | null;
 	propertyFilters: { key: string; value: string }[];  // metadata key=value pairs
@@ -200,6 +202,8 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 	excludeTags: [],
 	filenameContains: [],
 	filenameExact: [],
+	filenameExcludes: [],
+	filePathExcludes: [],
 	createdAfter: null,
 	createdBefore: null,
 	propertyFilters: [],
@@ -301,3 +305,4 @@ export interface IndexBuildResult {
   durationMs: number;
   errors: string[];
 }
+console.log('[types] DEFAULT_QUERY_OPTIONS initialised with exclude fields');
