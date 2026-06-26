@@ -16,6 +16,7 @@ export interface PreFilterOptions {
   folderExcludes: string[];
   tagExcludes: string[];
   fileNameExcludes: string[];     // title LIKE '%value%'
+  filePathExcludes: string[];     // exact path exclusions (full vault-relative path)
   excludedSourceIds: number[];    // explicit id exclusions (from the exclusion list feature)
 }
 
@@ -30,6 +31,7 @@ export const EMPTY_PREFILTER: PreFilterOptions = {
   folderExcludes: [],
   tagExcludes: [],
   fileNameExcludes: [],
+  filePathExcludes: [],
   excludedSourceIds: [],
 };
 
@@ -45,6 +47,7 @@ export function isPreFilterEmpty(opts: PreFilterOptions): boolean {
     opts.folderExcludes.length === 0 &&
     opts.tagExcludes.length === 0 &&
     opts.fileNameExcludes.length === 0 &&
+    opts.filePathExcludes.length === 0 &&
     opts.excludedSourceIds.length === 0
   );
 }
@@ -143,6 +146,15 @@ export class PreFilterService {
         return `title NOT LIKE $nameExc_${i}`;
       });
       conditions.push(excNameClauses.join(' AND '));
+    }
+
+    if (opts.filePathExcludes.length > 0) {
+      const excPathClauses = opts.filePathExcludes.map((p, i) => {
+        params[`$pathExc_${i}`] = p;
+        return `path != $pathExc_${i}`;
+      });
+      conditions.push(excPathClauses.join(' AND '));
+      console.log(`[PreFilterService] filePathExcludes:`, opts.filePathExcludes);
     }
 
     if (opts.excludedSourceIds.length > 0) {

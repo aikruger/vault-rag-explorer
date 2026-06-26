@@ -127,7 +127,7 @@ export class VaultRagExplorerView extends ItemView {
 
 		const grid = details.createEl('div', { cls: 'vre-prefilter-grid' });
 
-		const addRow = (label: string, placeholder: string, key: string, isExclude = false) => {
+		const addRow = (label: string, placeholder: string, storeKey: string, preFilterKey: keyof PreFilterOptions, isExclude = false) => {
 			const row = grid.createEl('div', { cls: 'vre-prefilter-row' });
 			row.createEl('label', { text: label, cls: isExclude ? 'vre-label-exclude' : 'vre-label-include' });
 			const input = row.createEl('input', {
@@ -137,22 +137,28 @@ export class VaultRagExplorerView extends ItemView {
 			}) as HTMLInputElement;
 			input.addEventListener('change', () => {
 				const values = input.value.split(',').map(v => v.trim()).filter(Boolean);
+				console.log(`[VaultRagExplorerView] prefilter ${storeKey} changed`, values);
 				this.store.setState({
-					queryOptions: { ...this.store.getState().queryOptions, [key]: values }
+					queryOptions: { ...this.store.getState().queryOptions, [storeKey]: values }
 				});
+				// Critical fix: also update this.preFilter so runQuery reads it
+				(this.preFilter as any)[preFilterKey] = values;
+				console.log(`[VaultRagExplorerView] this.preFilter.${preFilterKey} = `, values);
 			});
 			return input;
 		};
 
-		const addDateRow = (label: string, key: 'createdAfter' | 'createdBefore') => {
+		const addDateRow = (label: string, storeKey: 'createdAfter' | 'createdBefore', preFilterKey: 'createdAfter' | 'createdBefore') => {
 			const row = grid.createEl('div', { cls: 'vre-prefilter-row' });
 			row.createEl('label', { text: label, cls: 'vre-label-include' });
 			const input = row.createEl('input', { type: 'date', cls: 'vre-prefilter-input' }) as HTMLInputElement;
 			input.addEventListener('change', () => {
 				const ms = input.value ? new Date(input.value).getTime() : null;
+				console.log(`[VaultRagExplorerView] prefilter ${storeKey} changed`, ms);
 				this.store.setState({
-					queryOptions: { ...this.store.getState().queryOptions, [key]: ms }
+					queryOptions: { ...this.store.getState().queryOptions, [storeKey]: ms }
 				});
+				this.preFilter[preFilterKey] = ms;
 			});
 		};
 
@@ -178,26 +184,29 @@ export class VaultRagExplorerView extends ItemView {
 				this.store.setState({
 					queryOptions: { ...this.store.getState().queryOptions, propertyFilters: parsed }
 				});
+				this.preFilter.propertyFilters = parsed;
+				console.log('[VaultRagExplorerView] prefilter propertyFilters changed', parsed);
 			});
 		};
 
 		grid.createEl('div', { text: '✅ Include only', cls: 'vre-prefilter-section-label' });
-		addRow('Folders (comma-separated)', 'Research/, Projects/Active', 'includeFolders');
-		addRow('Tags (comma-separated)', 'concept, permanent', 'includeTags');
-		addRow('Filename contains', 'MOC, index', 'filenameContains');
-		addRow('Filename exact', 'Home, Dashboard', 'filenameExact');
-		addDateRow('Created after', 'createdAfter');
-		addDateRow('Created before', 'createdBefore');
+		addRow('Folders (comma-separated)', 'Research/, Projects/Active', 'includeFolders', 'folderIncludes');
+		addRow('Tags (comma-separated)', 'concept, permanent', 'includeTags', 'tagIncludes');
+		addRow('Filename contains', 'MOC, index', 'filenameContains', 'fileNameIncludes');
+		addRow('Filename exact', 'Home, Dashboard', 'filenameExact', 'fileNameExact');
+		addDateRow('Created after', 'createdAfter', 'createdAfter');
+		addDateRow('Created before', 'createdBefore', 'createdBefore');
 		addPropertyRow();
 
 		grid.createEl('div', { text: '❌ Exclude', cls: 'vre-prefilter-section-label' });
-		addRow('Folders (comma-separated)', 'Archive/, Templates/', 'excludeFolders', true);
-		addRow('Tags (comma-separated)', 'draft, inbox', 'excludeTags', true);
-		// Note: The UI prompt asks for filenameExcludes here, but it wasn't added to QueryOptions in step 1.
-		// Leaving it off to match types.ts constraints and avoid TS errors.
+		addRow('Folders (comma-separated)', 'Archive/, Templates/', 'excludeFolders', 'folderExcludes', true);
+		addRow('Tags (comma-separated)', 'draft, inbox', 'excludeTags', 'tagExcludes', true);
+		addRow('Filename contains', 'draft, WIP', 'filenameExcludes', 'fileNameExcludes', true);
+		addRow('File path (exact, comma-separated)', 'Research/MyNote.md, Archive/Old.md', 'filePathExcludes', 'filePathExcludes', true);
 
 		const resetBtn = details.createEl('button', { text: 'Reset filters', cls: 'vre-prefilter-reset' });
 		resetBtn.addEventListener('click', () => {
+			console.log('[VaultRagExplorerView] prefilter reset');
 			this.store.setState({
 				queryOptions: {
 					...this.store.getState().queryOptions,
@@ -207,11 +216,26 @@ export class VaultRagExplorerView extends ItemView {
 					excludeTags: [],
 					filenameContains: [],
 					filenameExact: [],
+					filenameExcludes: [],
+					filePathExcludes: [],
 					createdAfter: null,
 					createdBefore: null,
 					propertyFilters: [],
 				}
 			});
+			// Also reset preFilter
+			this.preFilter.folderIncludes = [];
+			this.preFilter.tagIncludes = [];
+			this.preFilter.fileNameIncludes = [];
+			this.preFilter.fileNameExact = [];
+			this.preFilter.createdAfter = null;
+			this.preFilter.createdBefore = null;
+			this.preFilter.propertyFilters = [];
+			this.preFilter.folderExcludes = [];
+			this.preFilter.tagExcludes = [];
+			this.preFilter.fileNameExcludes = [];
+			this.preFilter.filePathExcludes = [];
+			console.log('[VaultRagExplorerView] this.preFilter reset', this.preFilter);
 			details.querySelectorAll('input').forEach((el: HTMLInputElement) => { el.value = ''; });
 		});
 	}
@@ -442,12 +466,15 @@ export class VaultRagExplorerView extends ItemView {
 			this.preFilter.excludedSourceIds.push(hit.sourceId);
 		}
 
+		// Remove ALL graph nodes that belong to this source (note + all its blocks)
 		const cy = (this as any).cy || this.cytoscapeInstance;
 		if (cy) {
-			const node = cy.getElementById(`${hit.nodeType}-${hit.nodeId}`);
-			if (node.length) {
-				node.addClass('excluded');
-			}
+			cy.nodes().forEach((n: any) => {
+				if (n.data('source') === hit.sourceId) {
+					n.addClass('excluded');
+					console.log(`[VaultRagExplorerView] excludeNode: hiding graph node ${n.id()} for sourceId ${hit.sourceId}`);
+				}
+			});
 		}
 
 		if ((this as any)._refreshExclusionList) (this as any)._refreshExclusionList();
@@ -479,7 +506,16 @@ export class VaultRagExplorerView extends ItemView {
 						this.excludedSourceIds.delete(id);
 						this.preFilter.excludedSourceIds = this.preFilter.excludedSourceIds.filter((i: number) => i !== id);
 						const cy = (this as any).cy || this.cytoscapeInstance;
-						if (cy) cy.nodes().filter((n: any) => n.data('path') === path).removeClass('excluded');
+						// Restore ALL nodes belonging to this source
+						if (cy) {
+							cy.nodes().forEach((n: any) => {
+								if (n.data('source') === id) {
+									n.removeClass('excluded');
+									console.log(`[VaultRagExplorerView] restoreNode: un-hiding graph node ${n.id()} for sourceId ${id}`);
+								}
+							});
+						}
+						console.log(`[VaultRagExplorerView] restored sourceId ${id} (path: ${path})`);
 					}
 					stmt.free();
 					refresh();
@@ -535,6 +571,12 @@ export class VaultRagExplorerView extends ItemView {
 			});
 		});
 
+		this.registerDomEvent(link, 'click', (event: MouseEvent) => {
+			event.preventDefault();
+			console.log('[VaultRagExplorerView] internal-link clicked', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
+			this.openHit(hit);
+		});
+
 		if (hit.previewText) {
 			item.createEl('div', {
 				text: hit.previewText.slice(0, 120) + (hit.previewText.length > 120 ? '…' : ''),
@@ -588,12 +630,8 @@ export class VaultRagExplorerView extends ItemView {
 
 			const openBtn = actions.createEl("button", { text: "Open" });
 			openBtn.addEventListener("click", async () => {
-				const file = this.app.vault.getAbstractFileByPath(hit.path);
-				if (file) {
-					await this.app.workspace.getLeaf(true).openFile(file as never);
-				} else {
-					new Notice(`Could not find file: ${hit.path}`);
-				}
+				console.log('[VaultRagExplorerView] Open button clicked', { path: hit.path, lineStart: hit.lineStart });
+				await this.openHit(hit);
 			});
 	}
 
@@ -628,6 +666,11 @@ export class VaultRagExplorerView extends ItemView {
 		}
 
 		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
+
+		actions.createEl("button", { text: "Open File" }).addEventListener("click", async () => {
+			console.log('[VaultRagExplorerView] Inspector open file clicked', { path: hit.path, lineStart: hit.lineStart });
+			await this.openHit(hit);
+		});
 
 		const key = `${hit.nodeType}-${hit.nodeId}`;
 		const isLocked = this.plugin.lockedNodesService.isLocked(key);
@@ -956,5 +999,63 @@ export class VaultRagExplorerView extends ItemView {
 			}
 		}
 		console.log(`[VaultRagExplorerView] Cross-edge threshold=${THRESHOLD}, pairs checked=${hits.length * (hits.length-1) / 2}`);
+	}
+
+	private async openHit(hit: RetrievalHit): Promise<void> {
+		console.log('[VaultRagExplorerView] openHit entered', { path: hit.path, nodeType: hit.nodeType, lineStart: hit.lineStart });
+		console.log('[VaultRagExplorerView] openHit', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
+
+		const file = this.app.vault.getAbstractFileByPath(hit.path);
+		if (!file) {
+			new Notice(`File not found: ${hit.path}`);
+			console.warn('[VaultRagExplorerView] openHit: file not found', hit.path);
+			return;
+		}
+
+		// Search ALL workspace leaves across ALL windows for an existing open leaf
+		let existingLeaf: import('obsidian').WorkspaceLeaf | null = null;
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const view = leaf.view as { file?: { path: string } };
+			if (view?.file?.path === hit.path) {
+				existingLeaf = leaf;
+			}
+		});
+
+		// Use existing leaf or open a new one in the most recently used window
+		const leaf = existingLeaf ?? this.app.workspace.getLeaf('tab');
+
+		if (!existingLeaf) {
+			await leaf.openFile(file as import('obsidian').TFile);
+			console.log('[VaultRagExplorerView] openHit: opened in new tab', hit.path);
+		} else {
+			// Bring the window containing the existing leaf to focus
+			this.app.workspace.setActiveLeaf(leaf, { focus: true });
+			console.log('[VaultRagExplorerView] openHit: revealed existing leaf', hit.path);
+		}
+
+		// Scroll to the block if we have a line number
+		if (hit.nodeType === 'block' && hit.lineStart !== undefined && hit.lineStart > 0) {
+			// Wait a tick for the file to fully render before scrolling
+			setTimeout(() => {
+				try {
+					const view = leaf.view as {
+						editor?: {
+							setCursor: (pos: { line: number; ch: number }) => void;
+							scrollIntoView: (range: { from: { line: number; ch: number }; to: { line: number; ch: number } }, center: boolean) => void;
+						}
+					};
+					if (view.editor) {
+						const line = Math.max(0, (hit.lineStart ?? 1) - 1); // Convert 1-based to 0-based
+						view.editor.setCursor({ line, ch: 0 });
+						view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line: (hit.lineEnd ?? hit.lineStart ?? 1) - 1, ch: 0 } }, true);
+						console.log('[VaultRagExplorerView] openHit: scrolled to line', line);
+					} else {
+						console.warn('[VaultRagExplorerView] openHit: editor not available on leaf view, cannot scroll');
+					}
+				} catch (e) {
+					console.error('[VaultRagExplorerView] openHit: scroll failed', e);
+				}
+			}, 150);
+		}
 	}
 }
