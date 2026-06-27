@@ -487,7 +487,7 @@ export class VaultRagExplorerView extends ItemView {
 
 			this.renderMockResults(response.hits);
 			this.renderMockInspector(null);
-			this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
+			await this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
 
 			new Notice(`Query complete: ${response.hits.length} hits`);
 
@@ -762,7 +762,7 @@ export class VaultRagExplorerView extends ItemView {
 					const newResponse = { ...currentResponse, hits: mergedHits };
 					this.store.setState({ queryResponse: newResponse });
 					this.renderMockResults(newResponse.hits);
-					this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
+					await this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
 					new Notice(`Expanded semantics with ${response.hits.length} hits`);
 				}
 			} catch (e) {
@@ -848,42 +848,57 @@ export class VaultRagExplorerView extends ItemView {
 		return result;
 	}
 
-	private renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): void {
-  if (!this.graphPanel) return;
-  const lockedSet = new Set(lockedNodes.map(n => `${n.nodeType}-${n.nodeId}`));
-  const nodes = hits.map(hit => ({
-    id: `${hit.nodeType}-${hit.nodeId}`,
-    label: hit.title,
-    nodeType: hit.nodeType,
-    score: hit.finalScore,
-    sourceId: hit.sourceId,
-    locked: lockedSet.has(`${hit.nodeType}-${hit.nodeId}`),
-    excluded: this.excludedSourceIds.has(hit.sourceId),
-    radius: 6,
-  })) as unknown as GraphNode[];
-  const edges: GraphEdge[] = [];
-  const resultPaths = new Set(hits.map(h => h.path));
-  for (const hit of hits) {
-    const outlinks = this.getOutlinksForPath(hit.path);
-    for (const dst of outlinks) {
-      if (resultPaths.has(dst)) {
-        const dstId = this.getSourceIdForPath(dst);
-        if (dstId) {
-          edges.push({
-            id: `edge-wl-${hit.nodeId}-${dstId}`,
-            source: `${hit.nodeType}-${hit.nodeId}`,
-            target: `note-${dstId}`,
-            edgeType: "wikilink",
-            weight: 1.0,
-            expansion: false,
-          } as unknown as GraphEdge);
+	private async renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): Promise<void> {
+    if (!this.graphPanel) return;
+    console.log(`[VaultRagExplorerView] renderGraph called — hits=${hits.length}`);
+
+    // Clear stale exclusions so new query starts fresh
+    this.excludedSourceIds.clear();
+    this.excludedPaths.clear();
+    this.preFilter.excludedSourceIds = [];
+
+    const lockedSet = new Set(lockedNodes.map(n => `${n.nodeType}-${n.nodeId}`));
+    const nodes = hits.map(hit => ({
+        id: `${hit.nodeType}-${hit.nodeId}`,
+        label: hit.title,
+        nodeType: hit.nodeType,
+        score: hit.finalScore,
+        sourceId: hit.sourceId,
+        locked: lockedSet.has(`${hit.nodeType}-${hit.nodeId}`),
+        excluded: false,
+        radius: 6,
+    })) as unknown as GraphNode[];
+
+    const edges: GraphEdge[] = [];
+    const resultPaths = new Set(hits.map(h => h.path));
+    for (const hit of hits) {
+        const outlinks = this.getOutlinksForPath(hit.path);
+        for (const dst of outlinks) {
+            if (resultPaths.has(dst)) {
+                const dstId = this.getSourceIdForPath(dst);
+                if (dstId) {
+                    edges.push({
+                        id: `edge-wl-${hit.nodeId}-${dstId}`,
+                        source: `${hit.nodeType}-${hit.nodeId}`,
+                        target: `note-${dstId}`,
+                        edgeType: "wikilink",
+                        weight: 1.0,
+                        expansion: false,
+                    } as unknown as GraphEdge);
+                }
+            }
         }
-      }
     }
-  }
-  this.buildSemanticEdges(hits).then(semEdges => {
-    this.graphPanel?.setGraph(nodes, [...edges, ...semEdges]);
-  });
+
+    try {
+        const semEdges = await this.buildSemanticEdges(hits);
+        console.log(`[VaultRagExplorerView] renderGraph — wikiEdges=${edges.length} semEdges=${semEdges.length}`);
+        this.graphPanel.setGraph(nodes, [...edges, ...semEdges]);
+        console.log(`[VaultRagExplorerView] renderGraph — setGraph called with ${nodes.length} nodes`);
+    } catch (e) {
+        console.error("[VaultRagExplorerView] renderGraph — buildSemanticEdges failed, rendering with wikilinks only", e);
+        this.graphPanel.setGraph(nodes, edges);
+    }
 }
 
 	private async buildSemanticEdges(hits: RetrievalHit[]): Promise<GraphEdge[]> {
