@@ -307,3 +307,6 @@ export interface IndexBuildResult {
   errors: string[];
 }
 console.log('[types] DEFAULT_QUERY_OPTIONS initialised with exclude fields');
+
+// Obsidian's FileSystemAdapter exposes basePath — not in the type but present at runtime
+export interface FileSystemAdapter { basePath: string; }
