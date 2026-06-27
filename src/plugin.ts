@@ -88,6 +88,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
 
 
+
 		this.view = null;
 		if (this.db) {
 			this.db.close();
