@@ -114,3 +114,33 @@
 .vre-result-preview { font-size: 0.75em; color: var(--text-muted); padding-left: 44px; padding-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .vre-result-exclude { margin-left: auto; font-size: 0.7em; color: var(--text-muted); opacity: 0; padding: 1px 4px; border-radius: 3px; }
 .vre-result-item:hover .vre-result-exclude { opacity: 1; }
+
+/* D3 Graph Enhancements */
+.vre-graph-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 6px 8px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.vre-graph-control-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.vre-graph-control-label {
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.vre-graph-control-value {
+  min-width: 28px;
+  text-align: right;
+  color: var(--text-normal);
+}
+.vre-result-item--selected {
+  background: var(--background-modifier-active-hover);
+  border-left: 3px solid var(--interactive-accent);
+  padding-left: 6px;
+}

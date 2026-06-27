@@ -43,6 +43,7 @@ export class D3GraphPanel {
   private height: number = 0;
   private animationFrameId: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private nodeSizeScale: number = 1.0;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -96,7 +97,7 @@ export class D3GraphPanel {
       const d = degree.get(node.id) ?? 0;
       const base = node.nodeType === "block" ? 5 : 7;
       const max = node.nodeType === "block" ? 20 : 28;
-      node.radius = base + (d / maxDegree) * (max - base);
+      node.radius = (base + (d / maxDegree) * (max - base)) * this.nodeSizeScale;
     }
     console.log("[D3GraphPanel] computeRadii complete, maxDegree=", maxDegree);
   }
@@ -255,7 +256,10 @@ export class D3GraphPanel {
 
     canvas.addEventListener("mouseup", (e) => {
       if (dragging) {
-        console.log(`[D3GraphPanel] drag end node=${dragging.id} pinned at fx=${dragging.fx?.toFixed(1)}`);
+        console.log(`[D3GraphPanel] drag end node=${dragging.id}, releasing pin`);
+        dragging.fx = null;
+        dragging.fy = null;
+        this.simulation.alpha(0.4).restart();
         dragging = null;
         canvas.style.cursor = this.hoveredNode ? "grab" : "default";
       }
@@ -420,4 +424,29 @@ export class D3GraphPanel {
     this.resizeObserver?.disconnect();
     this.canvas.remove();
   }
+  setSimulationParams(params: {
+    linkDistance?: number;
+    chargeStrength?: number;
+    nodeSizeScale?: number;
+  }): void {
+    console.log("[D3GraphPanel] setSimulationParams", params);
+
+    if (params.linkDistance !== undefined) {
+      (this.simulation.force("link") as d3.ForceLink<GraphNode, GraphEdge>)
+        .distance(d => {
+          const w = typeof d.weight === "number" ? d.weight : 0.5;
+          return params.linkDistance! + (1 - w) * 80;
+        });
+    }
+    if (params.chargeStrength !== undefined) {
+      (this.simulation.force("charge") as d3.ForceManyBody<GraphNode>)
+        .strength(params.chargeStrength);
+    }
+    if (params.nodeSizeScale !== undefined) {
+      this.nodeSizeScale = params.nodeSizeScale;
+      this.computeRadii();
+    }
+    this.simulation.alpha(0.4).restart();
+  }
+
 }

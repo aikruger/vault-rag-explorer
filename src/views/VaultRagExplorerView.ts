@@ -36,6 +36,7 @@ export class VaultRagExplorerView extends ItemView {
 	private graphPanel: D3GraphPanel | null = null;
 	private preFilter: PreFilterOptions = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
 	private excludedSourceIds: Set<number> = new Set();
+	private resultItemMap: Map<string, HTMLElement> = new Map();
 	private excludedPaths: Set<string> = new Set();
 
 	constructor(leaf: WorkspaceLeaf, plugin: VaultRagExplorerPlugin) {
@@ -542,12 +543,16 @@ export class VaultRagExplorerView extends ItemView {
 	private renderMockResults(hits: RetrievalHit[]): void {
 		if (!this.resultsEl) return;
 		this.resultsEl.empty();
-
+		this.resultItemMap.clear();
 		this.renderExclusionList(this.resultsEl);
-
 		hits.forEach((hit) => {
 			this.renderHitItem(this.resultsEl!, hit);
 		});
+		const selectedId = this.store.getState().selectedNodeId;
+		if (selectedId) {
+			this.highlightResultItem(selectedId);
+			console.log(`[VaultRagExplorerView] renderMockResults: restored highlight for ${selectedId}`);
+		}
 	}
 
 	private renderHitItem(container: HTMLElement, hit: RetrievalHit): void {
@@ -779,7 +784,7 @@ export class VaultRagExplorerView extends ItemView {
 						sourceId: dstId,
 						locked: false,
 						excluded: false,
-						radius: 8,
+						radius: 6,
 						expansionSource: false,
 					});
 					const srcId = `${hit.nodeType}-${hit.nodeId}`;
@@ -842,7 +847,7 @@ export class VaultRagExplorerView extends ItemView {
     sourceId: hit.sourceId,
     locked: lockedSet.has(`${hit.nodeType}-${hit.nodeId}`),
     excluded: this.excludedSourceIds.has(hit.sourceId),
-    radius: 8,
+    radius: 6,
   })) as unknown as GraphNode[];
   const edges: GraphEdge[] = [];
   const resultPaths = new Set(hits.map(h => h.path));
