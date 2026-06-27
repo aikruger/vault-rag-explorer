@@ -416,8 +416,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				}
 
 				const totalEmbeddings =
-					(parsed?.sources?.reduce((a: number, s: any) => a + (s.embeddings ? s.embeddings.length : 0), 0) ?? 0) +
-					(parsed?.blocks?.reduce((a: number, b: any) => a + (b.embeddings ? b.embeddings.length : 0), 0) ?? 0);
+					(parsed?.sources?.reduce((a: number, s: unknown) => a + (s.embeddings ? s.embeddings.length : 0), 0) ?? 0) +
+					(parsed?.blocks?.reduce((a: number, b: unknown) => a + (b.embeddings ? b.embeddings.length : 0), 0) ?? 0);
 
 				console.log("[VaultRagExplorerPlugin] parser result", {
 					sources: (parsed)?.sources?.length ?? "MISSING",
