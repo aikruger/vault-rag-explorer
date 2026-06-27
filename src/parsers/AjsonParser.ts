@@ -481,7 +481,7 @@ export class AjsonParser {
         const embObj = embData as Record<string, unknown>;
         if (!Array.isArray(embObj['vec'])) continue;
 
-        const vec = (embObj['vec'] as unknown[]).filter(v => typeof v === 'number') as number[];
+        const vec = (embObj['vec'] as unknown[]).filter(v => typeof v === 'number');
         if (vec.length === 0) {
             console.warn(`[AjsonParser] Empty vec for model=${modelName} owner=${ownerKey.substring(0, 60)}`);
             continue;

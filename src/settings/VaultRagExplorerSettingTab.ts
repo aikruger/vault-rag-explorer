@@ -16,7 +16,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl('h2', { text: 'Vault RAG Explorer' });
+		new Setting(containerEl).setName("Vault RAG Explorer").setHeading();
 
 		// ── Smart Env Path ──────────────────────────────────────────────────────
 		new Setting(containerEl)

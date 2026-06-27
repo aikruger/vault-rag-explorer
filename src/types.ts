@@ -138,6 +138,7 @@ export interface RagSession {
 	updatedAt: number;
 	options: QueryOptions;
 	workspace: GraphWorkspaceState;
+	graphPositions?: Record<string, { x: number; y: number }>;
 	explanations: LockedNodeExplanation[];
 }
 

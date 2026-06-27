@@ -85,7 +85,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	onunload(): void {
 		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
+
 
 		this.view = null;
 		if (this.db) {
@@ -113,7 +113,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	detectSmartEnvPath(): string | null {
 		const fs = require('fs');
 		const path = require('path');
-		const basePath = (this.app.vault.adapter as any).basePath;
+		const basePath = (this.app.vault.adapter as unknown).basePath;
 
 		const candidates = [
 			path.join(basePath, '.smart-env', 'multi'),

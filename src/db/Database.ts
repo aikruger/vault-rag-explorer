@@ -120,11 +120,11 @@ export class Database {
                 return res?.[0]?.values?.[0]?.[0] as number | string ?? null;
             };
 
-            const getRows = (db: SqlJsDatabase, sql: string): any[] => {
+            const getRows = (db: SqlJsDatabase, sql: string): unknown[] => {
                 const res = db.exec(sql);
                 if (!res?.[0]) return [];
                 const cols = res[0].columns;
-                return res[0].values.map((row: any[]) =>
+                return res[0].values.map((row: unknown[]) =>
                     Object.fromEntries(cols.map((c: string, i: number) => [c, row[i]]))
                 );
             };

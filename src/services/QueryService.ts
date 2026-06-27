@@ -139,7 +139,7 @@ export class QueryService {
 
     console.log(`[QueryService] Scope SQL: ${sql}`, params);
     const stmt = rawDbFilter.prepare(sql);
-    stmt.bind(params as any);
+    stmt.bind(params as import("sql.js").BindParams);
     allowedSourceIds = new Set<number>();
     while (stmt.step()) {
 		const row = stmt.getAsObject() as { id: number; path: string; metadata_json: string };
@@ -177,7 +177,7 @@ export class QueryService {
   let storedEmbeddings = this.embeddingReader.loadAll(modelName);
   if (allowedSourceIds !== null) {
     storedEmbeddings = storedEmbeddings.filter(e => {
-      if (e.ownerType === 'source') return allowedSourceIds!.has(e.ownerId);
+      if (e.ownerType === 'source') return allowedSourceIds.has(e.ownerId);
       // For blocks, we need the block's parent source id — skip if we can't determine
       return true; // block filtering by parent source handled below after path lookup
     });

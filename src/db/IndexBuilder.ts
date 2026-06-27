@@ -22,12 +22,12 @@ export function getScalar(db: SqlJsDatabase, sql: string): number | string | nul
   }
 }
 
-export function getRows(db: SqlJsDatabase, sql: string): any[] {
+export function getRows(db: SqlJsDatabase, sql: string): unknown[] {
   try {
     const res = db.exec(sql);
     if (!res?.[0]) return [];
     const cols = res[0].columns;
-    return res[0].values.map((row: any[]) =>
+    return res[0].values.map((row: unknown[]) =>
       Object.fromEntries(cols.map((c: string, i: number) => [c, row[i]]))
     );
   } catch (e) {
@@ -98,7 +98,7 @@ export class IndexBuilder {
 
     for (let i = 0; i < ajsonFiles.length; i++) {
       if (i > 0 && i % CHUNK_SIZE === 0) {
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await new Promise(resolve => window.setTimeout(resolve, 0));
         console.log(`[IndexBuilder] yielded at file ${i}/${ajsonFiles.length}`);
       }
 
@@ -149,7 +149,7 @@ export class IndexBuilder {
       }
     }
 
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise(resolve => window.setTimeout(resolve, 0));
     console.log('[IndexBuilder] yielding before db.persist() / export()');
 
     this.db.persist();

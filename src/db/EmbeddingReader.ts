@@ -61,7 +61,7 @@ export class EmbeddingReader {
         embedding: Uint8Array;
       };
 
-      const buf = Buffer.from(row.embedding);
+      const buf = Buffer.from(row.embedding as unknown);
       const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 
       if (vec.length !== row.dim) {
@@ -155,16 +155,16 @@ export class EmbeddingReader {
     stmt.bind([dim]);
     const results: StoredEmbedding[] = [];
     while (stmt.step()) {
-      const row = stmt.getAsObject() as any;
+      const row = stmt.getAsObject() as Record<string, unknown>;
       const buf = Buffer.from(row.embedding);
       const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
       if (vec.length !== row.dim) continue;
       results.push({
-        ownerType: row.owner_type,
-        ownerId: row.owner_id,
-        modelName: row.model_name,
+        ownerType: row.owner_type as "block" | "source",
+        ownerId: row.owner_id as number,
+        modelName: row.model_name as string,
         dim: row.dim,
-        norm: row.norm,
+        norm: row.norm as number,
         isNormalized: Boolean(row.is_normalized),
         vec,
       });

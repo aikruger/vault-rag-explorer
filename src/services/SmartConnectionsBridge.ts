@@ -21,8 +21,8 @@ export class SmartConnectionsBridge {
     /**
      * Returns the Smart Connections plugin instance or throws.
      */
-    private getScPlugin(): any {
-        const plugins = (this.app as any).plugins?.plugins;
+    private getScPlugin(): unknown {
+        const plugins = (this.app as unknown).plugins?.plugins;
         if (!plugins) {
             throw new Error(`${LOG_PREFIX} Cannot access app.plugins.plugins — Obsidian API unavailable`);
         }
@@ -43,8 +43,8 @@ export class SmartConnectionsBridge {
      * Resolves the live embed model from SC's smart_env.
      * SC v2+ stores it at smart_env.embed_model or smart_env.smart_embed_model.
      */
-    private getEmbedModel(sc: any): any {
-        const env = sc.smart_env ?? sc.env;
+    private getEmbedModel(sc: unknown): unknown {
+        const env = (sc).smart_env ?? (sc).env;
         if (!env) {
             throw new Error(
                 `${LOG_PREFIX} Smart Connections smart_env not initialised yet. ` +
@@ -64,9 +64,9 @@ export class SmartConnectionsBridge {
             env.embedModel ??
             env.smart_embed ??
             env.embed ??
-            sc.embed_model ??
-            sc.embedModel ??
-            sc._embed_model ??
+            (sc).embed_model ??
+            (sc).embedModel ??
+            (sc)._embed_model ??
             null;
 
         if (!model) {
@@ -76,7 +76,7 @@ export class SmartConnectionsBridge {
             );
         }
 
-        const modelName = model.model_key ?? model.model_name ?? model.config?.model_key ?? model.key ?? 'unknown';
+        const modelName = (model).model_key ?? (model).model_name ?? (model).config?.model_key ?? model.key ?? 'unknown';
         console.log(`${LOG_PREFIX} embed_model resolved — model=${modelName}`);
         return model;
     }
@@ -92,25 +92,25 @@ export class SmartConnectionsBridge {
         const sc = this.getScPlugin();
         const model = this.getEmbedModel(sc);
 
-        let result: any;
+        let result: unknown;
 
         // SC's embed API differs slightly across versions:
         // v2.2+  → model.embed(text)  returns { vec: Float32Array }
         // v2.1   → model.embed_batch([{embed_input: text}]) returns [{vec: Float32Array}]
         // older  → model.embed(text) returns Float32Array directly
         try {
-            if (typeof model.embed === 'function') {
+            if (typeof (model).embed === 'function') {
                 console.log(`${LOG_PREFIX} calling model.embed(text) — SC v2.2+ API`);
-                result = await model.embed(text);
+                result = await (model).embed(text);
                 console.log(`${LOG_PREFIX} model.embed() returned — type=${typeof result} keys=${result ? Object.keys(result).join(',') : 'null'}`);
-            } else if (typeof model.embed_batch === 'function') {
+            } else if (typeof (model).embed_batch === 'function') {
                 console.log(`${LOG_PREFIX} calling model.embed_batch() — SC v2.1 API`);
-                const batch = await model.embed_batch([{ embed_input: text }]);
+                const batch = await (model).embed_batch([{ embed_input: text }]);
                 result = batch?.[0];
                 console.log(`${LOG_PREFIX} model.embed_batch() returned batch[0] — type=${typeof result}`);
-            } else if (typeof model.embed_input === 'function') {
+            } else if (typeof (model).embed_input === 'function') {
                 console.log(`${LOG_PREFIX} calling model.embed_input(text) — SC internal API`);
-                result = await model.embed_input(text);
+                result = await (model).embed_input(text);
                 console.log(`${LOG_PREFIX} model.embed_input() returned — type=${typeof result}`);
             } else {
                 throw new Error(`${LOG_PREFIX} Smart Connections embed model has no embed() or embed_batch() method`);
@@ -124,12 +124,12 @@ export class SmartConnectionsBridge {
         let vec: Float32Array;
         if (result instanceof Float32Array) {
             vec = result;
-        } else if (result?.vec instanceof Float32Array) {
-            vec = result.vec;
-        } else if (result?.data) {
-            vec = new Float32Array(result.data);
-        } else if (Array.isArray(result?.vec)) {
-            vec = new Float32Array(result.vec);
+        } else if ((result)?.vec instanceof Float32Array) {
+            vec = (result).vec;
+        } else if ((result)?.data) {
+            vec = new Float32Array((result).data);
+        } else if (Array.isArray((result)?.vec)) {
+            vec = new Float32Array((result).vec);
         } else if (Array.isArray(result)) {
             vec = new Float32Array(result);
         } else {
@@ -159,7 +159,7 @@ export class SmartConnectionsBridge {
         try {
             const sc = this.getScPlugin();
             const model = this.getEmbedModel(sc);
-            const name = model.model_key ?? model.model_name ?? model.config?.model_key ?? 'unknown';
+            const name = (model).model_key ?? (model).model_name ?? (model).config?.model_key ?? 'unknown';
             return name;
         } catch (err) {
             console.warn(`${LOG_PREFIX} resolveModelName() failed:`, err);
