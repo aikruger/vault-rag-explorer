@@ -849,7 +849,11 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 	private async renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): Promise<void> {
-    if (!this.graphPanel) return;
+    if (!this.graphPanel) {
+        console.warn("[VaultRagExplorerView] renderGraph — graphPanel is null, aborting");
+        return;
+    }
+    const panel = this.graphPanel;
     console.log(`[VaultRagExplorerView] renderGraph called — hits=${hits.length}`);
 
     // Clear stale exclusions so new query starts fresh
@@ -893,11 +897,11 @@ export class VaultRagExplorerView extends ItemView {
     try {
         const semEdges = await this.buildSemanticEdges(hits);
         console.log(`[VaultRagExplorerView] renderGraph — wikiEdges=${edges.length} semEdges=${semEdges.length}`);
-        this.graphPanel.setGraph(nodes, [...edges, ...semEdges]);
+        panel.setGraph(nodes, [...edges, ...semEdges]);
         console.log(`[VaultRagExplorerView] renderGraph — setGraph called with ${nodes.length} nodes`);
     } catch (e) {
         console.error("[VaultRagExplorerView] renderGraph — buildSemanticEdges failed, rendering with wikilinks only", e);
-        this.graphPanel.setGraph(nodes, edges);
+        panel.setGraph(nodes, edges);
     }
 }
 

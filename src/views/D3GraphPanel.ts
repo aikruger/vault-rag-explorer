@@ -131,9 +131,9 @@ export class D3GraphPanel {
       } else {
         const w = typeof edge.weight === "number" ? edge.weight : 0.5;
         ctx.strokeStyle = "#4a9eff";
-        ctx.lineWidth = 0.5 + w * 2.5;
-        ctx.globalAlpha = 0.3 + w * 0.4;
-        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 0.5 + w * 1.5;   // thinner, max ~2px
+        ctx.globalAlpha = 0.25 + w * 0.4;
+        ctx.setLineDash([]);              // solid line, no dash
       }
       ctx.stroke();
       ctx.globalAlpha = 1;

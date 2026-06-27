@@ -140,7 +140,7 @@
   color: var(--text-normal);
 }
 .vre-result-item--selected {
-  background: var(--background-modifier-active-hover);
-  border-left: 3px solid var(--interactive-accent);
-  padding-left: 6px;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-radius: 4px;
 }
