@@ -285,7 +285,19 @@ export class VaultRagExplorerView extends ItemView {
 
 		const runBtn = controls.createEl("button", { text: "Run Query" });
 		runBtn.addEventListener("click", async () => {
-			await this.runQuery();
+			runBtn.setAttr("disabled", "true");
+			runBtn.empty();
+			runBtn.createSpan({ cls: "loading-spinner" });
+			runBtn.createSpan({ text: " Running…" });
+			console.log("[VaultRagExplorerView] runQuery started — spinner shown");
+			try {
+				await this.runQuery();
+			} finally {
+				runBtn.removeAttribute("disabled");
+				runBtn.empty();
+				runBtn.setText("Run Query");
+				console.log("[VaultRagExplorerView] runQuery finished — spinner removed");
+			}
 		});
 
 		const lockAllBtn = controls.createEl("button", { text: "Lock All Visible" });
