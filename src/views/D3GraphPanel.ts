@@ -112,7 +112,7 @@ export class D3GraphPanel {
     for (const edge of this.edges) {
       const src = edge.source as GraphNode;
       const tgt = edge.target as GraphNode;
-      if (!src.x || !tgt.x) continue;
+      if (src.x === undefined || tgt.x === undefined) continue;
       if (src.excluded || tgt.excluded) continue;
 
       ctx.beginPath();
@@ -142,7 +142,7 @@ export class D3GraphPanel {
 
     for (const node of this.nodes) {
       if (node.excluded) continue;
-      if (!node.x) continue;
+      if (node.x === undefined) continue;
 
       const isHovered = this.hoveredNode?.id === node.id;
       const isSelected = this.selectedNodeId === node.id;
