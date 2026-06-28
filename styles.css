@@ -144,3 +144,69 @@
     color: var(--text-on-accent);
     border-radius: 4px;
 }
+
+/* Result item highlight (graph node selection) */
+.vre-result-item.vre-result-highlighted {
+	background: var(--background-modifier-hover);
+	outline: 1px solid var(--interactive-accent);
+	outline-offset: -1px;
+}
+
+/* Graph panel flex layout so canvas fills available space */
+.vre-graph-panel {
+	display: flex;
+	flex-direction: column;
+}
+.vre-graph-canvas {
+	flex: 1;
+	min-height: 0;
+}
+
+/* Graph controls toolbar */
+.vre-graph-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	padding: 6px 8px;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	flex-shrink: 0;
+}
+.vre-graph-ctrl-btn {
+	padding: 3px 10px;
+	font-size: 12px;
+	border-radius: 4px;
+	background: var(--interactive-normal);
+	color: var(--text-normal);
+	cursor: pointer;
+	border: 1px solid var(--background-modifier-border);
+}
+.vre-graph-ctrl-btn:hover { background: var(--interactive-hover); }
+.vre-graph-ctrl-label {
+	font-size: 11px;
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+.vre-graph-ctrl-slider {
+	width: 80px;
+	cursor: pointer;
+	accent-color: var(--interactive-accent);
+}
+
+/* Clear button */
+.vre-clear-btn {
+	padding: 3px 12px;
+	font-size: 12px;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--text-muted);
+	border: 1px solid var(--background-modifier-border);
+	cursor: pointer;
+	margin-left: auto;
+}
+.vre-clear-btn:hover {
+	background: var(--background-modifier-error);
+	color: var(--text-on-accent);
+	border-color: transparent;
+}

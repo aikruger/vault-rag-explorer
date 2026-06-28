@@ -423,7 +423,7 @@ export class VaultRagExplorerView extends ItemView {
 			new Notice(`Exported ${bundle.length} chars to ${fileName}`);
 		});
 
-		const clearBtn = controls.createEl("button", { text: "✕ Clear" });
+		const clearBtn = controls.createEl("button", { text: "✕ Clear", cls: "vre-clear-btn" });
 		clearBtn.title = "Clear query, results, graph and locked nodes";
 		clearBtn.addEventListener("click", () => {
 			console.log("[VaultRagExplorerView] Clear button clicked");
