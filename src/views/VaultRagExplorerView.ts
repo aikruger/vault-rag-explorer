@@ -261,6 +261,28 @@ export class VaultRagExplorerView extends ItemView {
 		});
 	}
 
+
+	private clearSession(): void {
+		console.log("[VaultRagExplorerView] clearSession called");
+		this.store.setState({ currentQueryText: "", queryResponse: null, selectedNodeId: null, activeSessionId: null });
+		if (this.queryInputEl) this.queryInputEl.value = "";
+		if (this.resultsEl) {
+			this.resultsEl.empty();
+			this.resultsEl.createEl("div", { text: "No query run yet.", cls: "vre-empty-state" });
+		}
+		if (this.inspectorEl) {
+			this.inspectorEl.empty();
+			this.inspectorEl.createEl("div", { text: "Select a result or graph node to inspect it.", cls: "vre-empty-state" });
+		}
+		this.graphPanel?.setGraph([], []);
+		this.excludedSourceIds.clear();
+		this.excludedPaths.clear();
+		this.preFilter = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
+		this.resultItemMap.clear();
+		this.plugin.lockedNodesService.clear();
+		console.log("[VaultRagExplorerView] clearSession complete");
+	}
+
 	private renderQueryPanel(container: HTMLElement): void {
 		const panel = container.createDiv({ cls: "vre-panel vre-query-panel" });
 		panel.createEl("h3", { text: "Query" });
@@ -558,7 +580,7 @@ export class VaultRagExplorerView extends ItemView {
 		this.resultItemMap.clear();
 		this.renderExclusionList(this.resultsEl);
 		hits.forEach((hit) => {
-			this.renderHitItem(this.resultsEl!, hit);
+			this.renderHitItem(this.resultsEl!, hit, null);
 		});
 		const selectedId = this.store.getState().selectedNodeId;
 		if (selectedId) {
@@ -567,7 +589,7 @@ export class VaultRagExplorerView extends ItemView {
 		}
 	}
 
-	private renderHitItem(container: HTMLElement, hit: RetrievalHit): void {
+	private renderHitItem(container: HTMLElement, hit: RetrievalHit, selectedId: string | null = null): void {
 		const item = container.createEl('div', { cls: 'vre-result-item' });
 
 		item.createEl('span', {
