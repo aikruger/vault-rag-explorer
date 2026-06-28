@@ -16,6 +16,7 @@ export interface VaultRagExplorerSettings {
 	enableDebugLogging: boolean;
 	lastIndexBuild: number;
 	autoIndexOnLoad: boolean;
+	ragExportFolder: string;
 }
 
 export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
 	enableDebugLogging: true,
 	lastIndexBuild: 0,
 	autoIndexOnLoad: false,
+	ragExportFolder: "",
 };
 
 export interface QueryOptions {

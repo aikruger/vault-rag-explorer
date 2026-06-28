@@ -149,6 +149,50 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		// ── RAG Export Folder ────────────────────────────────────────────────────
+		new Setting(containerEl)
+			.setName("RAG export folder")
+			.setDesc(
+				"Vault-relative folder path where RAG context exports are saved. " +
+				"Leave blank to save to the vault root. " +
+				"Example: RAG Exports/Sessions"
+			)
+			.addText(text => {
+				text
+					.setPlaceholder("RAG Exports/Sessions")
+					.setValue(this.plugin.settings.ragExportFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.ragExportFolder = value.trim();
+						await this.plugin.saveSettings();
+						console.log("[VaultRagSettings] ragExportFolder updated to:", value.trim());
+					});
+				text.inputEl.style.width = "100%";
+			})
+			.addButton(btn => {
+				btn.setButtonText("Create folder")
+					.onClick(async () => {
+						const folder = this.plugin.settings.ragExportFolder.trim();
+						if (!folder) {
+							new Notice("Enter a folder path first.");
+							return;
+						}
+						try {
+							const exists = this.app.vault.getAbstractFileByPath(folder);
+							if (exists) {
+								new Notice(`Folder already exists: ${folder}`);
+								console.log("[VaultRagSettings] ragExportFolder already exists:", folder);
+								return;
+							}
+							await this.app.vault.createFolder(folder);
+							new Notice(`Created folder: ${folder}`);
+							console.log("[VaultRagSettings] ragExportFolder created:", folder);
+						} catch (err) {
+							new Notice("Failed to create folder: " + (err as Error).message);
+							console.error("[VaultRagSettings] ragExportFolder create failed", err);
+						}
+					});
+			});
 	}
 
 	private renderIndexStatus(el: HTMLElement): void {

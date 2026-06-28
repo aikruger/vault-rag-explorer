@@ -410,17 +410,37 @@ export class VaultRagExplorerView extends ItemView {
 
 		const exportBtn = controls.createEl("button", { text: "Export RAG Context" });
 		exportBtn.addEventListener("click", async () => {
-
-		console.log("[VaultRagExplorerView] Export RAG Context clicked");
+			console.log("[VaultRagExplorerView] Export RAG Context clicked");
 			const locked = this.plugin.lockedNodesService.getAll();
 			if (locked.length === 0) {
 				new Notice("No locked nodes to export.");
 				return;
 			}
 			const bundle = await this.plugin.ragExportService.buildContextBundle(locked);
+			const rawFolder = this.plugin.settings.ragExportFolder.trim();
 			const fileName = `rag_context_export_${Date.now()}.md`;
-			await this.app.vault.adapter.write(fileName, bundle);
-			new Notice(`Exported ${bundle.length} chars to ${fileName}`);
+
+			let filePath: string;
+			if (rawFolder) {
+				// Ensure the folder exists — create it silently if not
+				const folderExists = this.app.vault.getAbstractFileByPath(rawFolder);
+				if (!folderExists) {
+					try {
+						await this.app.vault.createFolder(rawFolder);
+						console.log("[VaultRagExplorerView] export: created missing folder", rawFolder);
+					} catch (err) {
+						console.warn("[VaultRagExplorerView] export: could not create folder", rawFolder, err);
+					}
+				}
+				// Normalise trailing slash before joining
+				filePath = rawFolder.replace(/\/+$/, "") + "/" + fileName;
+			} else {
+				filePath = fileName; // vault root
+			}
+
+			await this.app.vault.adapter.write(filePath, bundle);
+			new Notice(`Exported ${bundle.length} chars to ${filePath}`);
+			console.log("[VaultRagExplorerView] export written to", filePath);
 		});
 
 		const clearBtn = controls.createEl("button", { text: "✕ Clear", cls: "vre-clear-btn" });
