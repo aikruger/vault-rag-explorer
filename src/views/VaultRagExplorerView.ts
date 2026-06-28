@@ -443,25 +443,68 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 	private renderGraphPanel(container: HTMLElement): void {
-  const panel = container.createDiv({ cls: "vre-panel vre-graph-panel" });
-  panel.createEl("h3", { text: "Graph" });
-  this.graphEl = panel.createDiv({ cls: "vre-graph-canvas" });
-  if (this.graphPanel) {
-    this.graphPanel.destroy();
-    this.graphPanel = null;
-  }
-  this.graphPanel = new D3GraphPanel(this.graphEl);
-  this.graphPanel.setOnNodeClick((nodeId) => {
-    this.store.setState({ selectedNodeId: nodeId });
-    this.highlightResultItem(nodeId);
-    console.log(`[VaultRagExplorerView] graph node clicked — nodeId=${nodeId}`);
-    const response = this.store.getState().queryResponse;
-    if (response) {
-      const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeId);
-      if (hit) this.renderMockInspector(hit);
-    }
-  });
-}
+		const panel = container.createDiv({ cls: "vre-panel vre-graph-panel" });
+		panel.createEl("h3", { text: "Graph" });
+		this.graphEl = panel.createDiv({ cls: "vre-graph-canvas" });
+		if (this.graphPanel) {
+			this.graphPanel.destroy();
+			this.graphPanel = null;
+		}
+		this.graphPanel = new D3GraphPanel(this.graphEl);
+		this.graphPanel.setOnNodeClick((nodeId) => {
+			this.store.setState({ selectedNodeId: nodeId });
+			this.highlightResultItem(nodeId);
+			console.log(`[VaultRagExplorerView] graph node clicked — nodeId=${nodeId}`);
+			const response = this.store.getState().queryResponse;
+			if (response) {
+				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeId);
+				if (hit) this.renderMockInspector(hit);
+			}
+		});
+
+		// Graph controls toolbar
+		const controls = panel.createDiv({ cls: "vre-graph-controls" });
+
+		const resetBtn = controls.createEl("button", { text: "⌖ Reset View", cls: "vre-graph-ctrl-btn" });
+		resetBtn.title = "Fit all nodes into view";
+		resetBtn.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] graph reset view clicked");
+			this.graphPanel?.resetView();
+		});
+
+		const reheatBtn = controls.createEl("button", { text: "⟳ Reheat", cls: "vre-graph-ctrl-btn" });
+		reheatBtn.title = "Restart force simulation";
+		reheatBtn.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] graph reheat clicked");
+			this.graphPanel?.reheat();
+		});
+
+		controls.createEl("label", { text: "Link dist", cls: "vre-graph-ctrl-label" });
+		const linkSlider = controls.createEl("input", { cls: "vre-graph-ctrl-slider" }) ;
+		linkSlider.type = "range"; linkSlider.min = "30"; linkSlider.max = "300"; linkSlider.value = "80";
+		linkSlider.addEventListener("input", () => {
+			console.log("[VaultRagExplorerView] linkDistance changed", linkSlider.value);
+			this.graphPanel?.setSimulationParams({ linkDistance: parseInt(linkSlider.value, 10) });
+		});
+
+		controls.createEl("label", { text: "Repulsion", cls: "vre-graph-ctrl-label" });
+		const chargeSlider = controls.createEl("input", { cls: "vre-graph-ctrl-slider" }) ;
+		chargeSlider.type = "range"; chargeSlider.min = "-400"; chargeSlider.max = "-10"; chargeSlider.value = "-120";
+		chargeSlider.addEventListener("input", () => {
+			console.log("[VaultRagExplorerView] chargeStrength changed", chargeSlider.value);
+			this.graphPanel?.setSimulationParams({ chargeStrength: parseInt(chargeSlider.value, 10) });
+		});
+
+		controls.createEl("label", { text: "Node size", cls: "vre-graph-ctrl-label" });
+		const sizeSlider = controls.createEl("input", { cls: "vre-graph-ctrl-slider" }) ;
+		sizeSlider.type = "range"; sizeSlider.min = "0.5"; sizeSlider.max = "3"; sizeSlider.step = "0.1"; sizeSlider.value = "1.0";
+		sizeSlider.addEventListener("input", () => {
+			console.log("[VaultRagExplorerView] nodeSizeScale changed", sizeSlider.value);
+			this.graphPanel?.setSimulationParams({ nodeSizeScale: parseFloat(sizeSlider.value) });
+		});
+
+		console.log("[VaultRagExplorerView] renderGraphPanel — controls rendered");
+	}
 
 	private renderInspectorPanel(container: HTMLElement): void {
 		const panel = container.createDiv({ cls: "vre-panel vre-inspector-panel" });
