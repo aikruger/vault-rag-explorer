@@ -422,6 +422,13 @@ export class VaultRagExplorerView extends ItemView {
 			await this.app.vault.adapter.write(fileName, bundle);
 			new Notice(`Exported ${bundle.length} chars to ${fileName}`);
 		});
+
+		const clearBtn = controls.createEl("button", { text: "✕ Clear" });
+		clearBtn.title = "Clear query, results, graph and locked nodes";
+		clearBtn.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Clear button clicked");
+			this.clearSession();
+		});
 	}
 
 	private renderResultsPanel(container: HTMLElement): void {
