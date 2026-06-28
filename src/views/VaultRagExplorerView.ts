@@ -446,6 +446,8 @@ export class VaultRagExplorerView extends ItemView {
   this.graphPanel = new D3GraphPanel(this.graphEl);
   this.graphPanel.setOnNodeClick((nodeId) => {
     this.store.setState({ selectedNodeId: nodeId });
+    this.highlightResultItem(nodeId);
+    console.log(`[VaultRagExplorerView] graph node clicked — nodeId=${nodeId}`);
     const response = this.store.getState().queryResponse;
     if (response) {
       const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeId);
@@ -591,6 +593,9 @@ export class VaultRagExplorerView extends ItemView {
 
 	private renderHitItem(container: HTMLElement, hit: RetrievalHit, selectedId: string | null = null): void {
 		const item = container.createEl('div', { cls: 'vre-result-item' });
+		const nodeKey = `${hit.nodeType}-${hit.nodeId}`;
+		this.resultItemMap.set(nodeKey, item);
+		console.log(`[VaultRagExplorerView] renderHitItem — mapped nodeKey=${nodeKey}`);
 
 		item.createEl('span', {
 			text: hit.finalScore.toFixed(3),
