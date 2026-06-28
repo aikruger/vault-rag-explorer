@@ -43,6 +43,8 @@ export class D3GraphPanel {
   private height: number = 0;
   private animationFrameId: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
+	private nodeScale: number = 1.0;
+	private zoomBehavior: d3.ZoomBehavior<HTMLCanvasElement, unknown> | null = null;
   private nodeSizeScale: number = 1.0;
 
   constructor(container: HTMLElement) {
@@ -152,7 +154,7 @@ export class D3GraphPanel {
       if (node.nodeType === "query") fill = "#ffffff";
 
       ctx.beginPath();
-      ctx.arc(node.x, node.y!, node.radius, 0, 2 * Math.PI);
+      ctx.arc(node.x, node.y!, node.radius * this.nodeScale, 0, 2 * Math.PI);
       ctx.fillStyle = fill;
       ctx.fill();
 
@@ -195,6 +197,7 @@ export class D3GraphPanel {
         this.drawFrame();
       });
 
+    this.zoomBehavior = zoom;
     d3.select(this.canvas).call(zoom);
     console.log("[D3GraphPanel] zoom and pan attached");
   }
@@ -218,7 +221,7 @@ export class D3GraphPanel {
         if (n.excluded || !n.x) continue;
         const dx = n.x - x;
         const dy = (n.y ?? 0) - y;
-        if (Math.sqrt(dx * dx + dy * dy) <= n.radius + 3) return n;
+        if (Math.sqrt(dx * dx + dy * dy) <= (n.radius * this.nodeScale) + 3) return n;
       }
       return null;
     };
@@ -417,7 +420,39 @@ export class D3GraphPanel {
     this.onNodeClick = cb;
   }
 
-  destroy(): void {
+  resetView(): void {
+  console.log("[D3GraphPanel] resetView called");
+  // Fit all non-excluded nodes into the canvas viewport
+  const visible = this.nodes.filter(n => !n.excluded && n.x !== undefined);
+  if (visible.length === 0) return;
+  const xs = visible.map(n => n.x!);
+  const ys = visible.map(n => n.y!);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const padding = 40;
+  const scaleX = (this.width - padding * 2) / (maxX - minX || 1);
+  const scaleY = (this.height - padding * 2) / (maxY - minY || 1);
+  const k = Math.min(scaleX, scaleY, 2);
+  const tx = this.width / 2 - k * (minX + maxX) / 2;
+  const ty = this.height / 2 - k * (minY + maxY) / 2;
+  this.transform = d3.zoomIdentity.translate(tx, ty).scale(k);
+  // Sync the d3 zoom state so subsequent user panning starts from here
+  d3.select(this.canvas).call(
+    d3.zoom<HTMLCanvasElement, unknown>().transform,
+    this.transform
+  );
+  this.drawFrame();
+  console.log(`[D3GraphPanel] resetView complete k=${k.toFixed(2)} tx=${tx.toFixed(0)} ty=${ty.toFixed(0)}`);
+}
+
+reheat(): void {
+  console.log("[D3GraphPanel] reheat called");
+  this.simulation.alpha(0.8).restart();
+}
+
+	destroy(): void {
     console.log("[D3GraphPanel] destroy called");
     this.simulation.stop();
     if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);

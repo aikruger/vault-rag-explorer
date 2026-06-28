@@ -86,6 +86,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	onunload(): void {
 		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 
 
