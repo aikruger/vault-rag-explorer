@@ -17,6 +17,7 @@ export interface GraphNode extends d3.SimulationNodeDatum {
   y?: number;
   fx?: number | null;
   fy?: number | null;
+  pinned?: boolean;
 }
 
 export interface GraphEdge extends d3.SimulationLinkDatum<GraphNode> {
@@ -161,17 +162,26 @@ export class D3GraphPanel {
       if (node.locked) {
         ctx.strokeStyle = "#ffd700";
         ctx.lineWidth = 3;
+        ctx.setLineDash([]);
+      } else if (node.pinned) {
+        ctx.strokeStyle = "#00e5ff";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
       } else if (isSelected) {
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 2.5;
+        ctx.setLineDash([]);
       } else if (isHovered) {
         ctx.strokeStyle = "rgba(255,255,255,0.6)";
         ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
       } else {
         ctx.strokeStyle = "rgba(255,255,255,0.25)";
         ctx.lineWidth = 1;
+        ctx.setLineDash([]);
       }
       ctx.stroke();
+      ctx.setLineDash([]); // always reset after stroke
 
       if (isHovered || isSelected || node.radius > 12) {
         ctx.font = `${isSelected ? "bold " : ""}10px sans-serif`;
@@ -259,12 +269,14 @@ export class D3GraphPanel {
 
     canvas.addEventListener("mouseup", (e) => {
       if (dragging) {
-        console.log(`[D3GraphPanel] drag end node=${dragging.id}, releasing pin`);
-        dragging.fx = null;
-        dragging.fy = null;
-        this.simulation.alpha(0.4).restart();
+        // Keep fx/fy set — node is now pegged at its dropped position.
+        // User double-clicks to release pin back into the simulation.
+        dragging.pinned = true;
+        console.log(`[D3GraphPanel] drag end node=${dragging.id} — pegged at fx=${dragging.fx?.toFixed(1)} fy=${dragging.fy?.toFixed(1)}`);
+        this.simulation.alpha(0.1).restart();
         dragging = null;
         canvas.style.cursor = this.hoveredNode ? "grab" : "default";
+        this.drawFrame();
       }
     });
 
@@ -285,8 +297,10 @@ export class D3GraphPanel {
       if (hit) {
         hit.fx = null;
         hit.fy = null;
+        hit.pinned = false;
         this.simulation.alpha(0.3).restart();
         console.log(`[D3GraphPanel] double-click unpinned node=${hit.id}`);
+        this.drawFrame();
       }
     });
 
@@ -314,15 +328,15 @@ export class D3GraphPanel {
 
   setGraph(nodes: GraphNode[], edges: GraphEdge[]): void {
     console.log(`[D3GraphPanel] setGraph nodes=${nodes.length} edges=${edges.length}`);
-    const posMap = new Map<string, { x: number; y: number; fx: number | null | undefined; fy: number | null | undefined }>();
+    const posMap = new Map<string, { x: number; y: number; fx: number | null | undefined; fy: number | null | undefined; pinned?: boolean }>();
     for (const n of this.nodes) {
-      if (n.x !== undefined) posMap.set(n.id, { x: n.x, y: n.y ?? 0, fx: n.fx, fy: n.fy });
+      if (n.x !== undefined) posMap.set(n.id, { x: n.x, y: n.y ?? 0, fx: n.fx, fy: n.fy, pinned: n.pinned });
     }
     this.nodes = nodes;
     this.edges = edges;
     for (const n of this.nodes) {
       const prev = posMap.get(n.id);
-      if (prev) { n.x = prev.x; n.y = prev.y; n.fx = prev.fx; n.fy = prev.fy; }
+      if (prev) { n.x = prev.x; n.y = prev.y; n.fx = prev.fx; n.fy = prev.fy; n.pinned = (prev.fx !== null && prev.fx !== undefined); }
       else { n.x = this.width / 2 + (Math.random() - 0.5) * 200; n.y = this.height / 2 + (Math.random() - 0.5) * 200; }
     }
     this.computeRadii();
