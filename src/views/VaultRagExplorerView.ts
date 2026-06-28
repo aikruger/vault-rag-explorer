@@ -688,6 +688,23 @@ export class VaultRagExplorerView extends ItemView {
 			});
 	}
 
+
+	private highlightResultItem(nodeId: string): void {
+		console.log(`[VaultRagExplorerView] highlightResultItem called nodeId=${nodeId}`);
+		if (!this.resultsEl) return;
+		this.resultsEl.querySelectorAll(".vre-result-item").forEach((el) => {
+			(el as HTMLElement).removeClass("vre-result-highlighted");
+		});
+		const item = this.resultItemMap.get(nodeId);
+		if (item) {
+			item.addClass("vre-result-highlighted");
+			item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+			console.log(`[VaultRagExplorerView] highlightResultItem — highlighted ${nodeId}`);
+		} else {
+			console.warn(`[VaultRagExplorerView] highlightResultItem — no DOM item found for nodeId=${nodeId}`);
+		}
+	}
+
 	private renderMockInspector(hit: RetrievalHit | null): void {
 		if (!this.inspectorEl) return;
 		this.inspectorEl.empty();
