@@ -1,3 +1,10 @@
+interface AjsonParseResult {
+  sources: { embeddings: unknown[] }[];
+  blocks: { embeddings: unknown[] }[];
+  errors: unknown[];
+  skippedCount?: number;
+}
+import type { FileSystemAdapter } from "../types";
 import { Editor, MarkdownView, Notice } from "obsidian";
 import type VaultRagExplorerPlugin from "../plugin";
 import { VIEW_TYPE_VAULT_RAG_EXPLORER } from "../types";
@@ -189,9 +196,9 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					return;
 				}
 
-				const allSources: any[] = [];
-				const allBlocks: any[] = [];
-				const allErrors: any[] = [];
+				const allSources: unknown[] = [];
+				const allBlocks: unknown[] = [];
+				const allErrors: unknown[] = [];
 				let skipped = 0;
 					let parsedOk = 0;
 					const failedFiles: string[] = [];
@@ -263,9 +270,9 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					return;
 				}
 
-				const allSources: any[] = [];
-				const allBlocks: any[] = [];
-				const allErrors: any[] = [];
+				const allSources: unknown[] = [];
+				const allBlocks: unknown[] = [];
+				const allErrors: unknown[] = [];
 				let skipped = 0;
 
 				for (const filePath of ajsonFiles) {
@@ -352,7 +359,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				const fs = await import("fs");
 				const path = await import("path");
 
-				const basePath = (plugin.app.vault.adapter as any).basePath;
+				const basePath = (plugin.app.vault.adapter as unknown as FileSystemAdapter).basePath;
+					console.log('[TypeFix] registerCommands: resolved basePath via FileSystemAdapter', { basePath });
 				const smartFolder = path.join(basePath, ".smart-env", "multi");
 
 				console.log("[VaultRagExplorerPlugin] debug-parse-first-ajson-file", { smartFolder });
@@ -395,25 +403,27 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					first400: raw.slice(0, 400).replace(/\n/g, "\\n"),
 				});
 
-				let parsed: any;
+				let parsed: AjsonParseResult | undefined;
 				try {
 					const { AjsonParser } = await import("../parsers/AjsonParser");
 					const parser = new AjsonParser(true);
 					parsed = parser.parseContent(raw, firstPath);
+					console.log('[TypeFix] registerCommands: parseContent result typed as AjsonParseResult');
 				} catch (err) {
 					console.log("[VaultRagExplorerPlugin] parser THREW", { error: String(err), stack: (err as Error).stack });
 					new Notice("Parser threw — see console");
 					return;
 				}
 
-				const totalEmbeddings = (parsed?.sources?.reduce((a: number, s: any) => a + s.embeddings.length, 0) || 0) +
-										(parsed?.blocks?.reduce((a: number, b: any) => a + b.embeddings.length, 0) || 0);
+				const totalEmbeddings =
+					(parsed?.sources?.reduce((a: number, s: any) => a + (s.embeddings ? s.embeddings.length : 0), 0) ?? 0) +
+					(parsed?.blocks?.reduce((a: number, b: any) => a + (b.embeddings ? b.embeddings.length : 0), 0) ?? 0);
 
 				console.log("[VaultRagExplorerPlugin] parser result", {
-					sources: parsed?.sources?.length ?? "MISSING",
-					blocks: parsed?.blocks?.length ?? "MISSING",
+					sources: (parsed)?.sources?.length ?? "MISSING",
+					blocks: (parsed)?.blocks?.length ?? "MISSING",
 					embeddings: totalEmbeddings,
-					sampleEmbedding: parsed?.sources?.[0]?.embeddings?.[0] ?? parsed?.blocks?.[0]?.embeddings?.[0] ?? null,
+					sampleEmbedding: (parsed)?.sources?.[0]?.embeddings?.[0] ?? (parsed)?.blocks?.[0]?.embeddings?.[0] ?? null,
 				});
 
 				new Notice(`Parse result: ${totalEmbeddings} embeddings from first file`);
@@ -427,7 +437,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				console.log("[VaultRagExplorerPlugin] === INDEX BUILD START ===");
 
 				// Step A: resolve paths
-				const basePath = (plugin.app.vault.adapter as any).basePath;
+				const basePath = (plugin.app.vault.adapter as unknown as FileSystemAdapter).basePath;
+				console.log('[TypeFix] registerCommands: resolved basePath via FileSystemAdapter', { basePath });
 				const path = await import("path");
 				const pluginDir = path.join(basePath, ".obsidian", "plugins", plugin.manifest.id);
 				const dataDir = path.join(pluginDir, "data");
@@ -487,8 +498,8 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 					const { AjsonParser } = await import("../parsers/AjsonParser");
 					const parser = new AjsonParser(plugin.settings.enableDebugLogging);
 
-					const allSources: any[] = [];
-					const allBlocks: any[] = [];
+					const allSources: unknown[] = [];
+					const allBlocks: unknown[] = [];
 
 						await plugin.indexBuilder.buildFromPath(smartFolderPath, ajsonFiles.map((f: string) => path.join(smartFolderPath, f)));
 						console.log("[VaultRagExplorerPlugin] buildFromPath() completed without throwing");

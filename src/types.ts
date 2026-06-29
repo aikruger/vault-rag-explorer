@@ -16,6 +16,7 @@ export interface VaultRagExplorerSettings {
 	enableDebugLogging: boolean;
 	lastIndexBuild: number;
 	autoIndexOnLoad: boolean;
+	ragExportFolder: string;
 }
 
 export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
 	enableDebugLogging: true,
 	lastIndexBuild: 0,
 	autoIndexOnLoad: false,
+	ragExportFolder: "",
 };
 
 export interface QueryOptions {
@@ -138,6 +140,7 @@ export interface RagSession {
 	updatedAt: number;
 	options: QueryOptions;
 	workspace: GraphWorkspaceState;
+	graphPositions?: Record<string, { x: number; y: number }>;
 	explanations: LockedNodeExplanation[];
 }
 
@@ -306,3 +309,6 @@ export interface IndexBuildResult {
   errors: string[];
 }
 console.log('[types] DEFAULT_QUERY_OPTIONS initialised with exclude fields');
+
+// Obsidian's FileSystemAdapter exposes basePath — not in the type but present at runtime
+export interface FileSystemAdapter { basePath: string; }

@@ -1,5 +1,41 @@
 import { App } from 'obsidian';
 
+// Duck-type interfaces for Smart Connections internals — shapes vary across SC versions
+interface ScPluginShape {
+  manifest?: { version?: string };
+  smart_env?: ScEnvShape;
+  env?: ScEnvShape;
+  embed_model?: ScModelShape;
+  embedModel?: ScModelShape;
+  _embed_model?: ScModelShape;
+}
+
+interface ScEnvShape {
+  _embed_model?: ScModelShape;
+  embed_model?: ScModelShape;
+  smart_embed_model?: ScModelShape;
+  embedModel?: ScModelShape;
+  smart_embed?: ScModelShape;
+  embed?: ScModelShape;
+}
+
+interface ScModelShape {
+  embed?: (text: string) => Promise<unknown>;
+  embed_batch?: (items: { embed_input: string }[]) => Promise<unknown[]>;
+  embed_input?: (text: string) => Promise<unknown>;
+  model_key?: string;
+  model_name?: string;
+  config?: { model_key?: string };
+  key?: string;
+  vec?: Float32Array | number[];
+  data?: ArrayLike<number>;
+}
+
+interface ScEmbedResult {
+  vec?: Float32Array | number[];
+  data?: ArrayLike<number>;
+}
+
 const LOG_PREFIX = '[SmartConnectionsBridge]';
 
 /**
@@ -21,12 +57,11 @@ export class SmartConnectionsBridge {
     /**
      * Returns the Smart Connections plugin instance or throws.
      */
-    private getScPlugin(): any {
-        const plugins = (this.app as any).plugins?.plugins;
+    private getScPlugin(): ScPluginShape {
+        const plugins = (this.app as unknown as { plugins?: { plugins?: Record<string, ScPluginShape> } }).plugins?.plugins;
         if (!plugins) {
             throw new Error(`${LOG_PREFIX} Cannot access app.plugins.plugins — Obsidian API unavailable`);
         }
-
         const sc = plugins['smart-connections'];
         if (!sc) {
             throw new Error(
@@ -34,7 +69,6 @@ export class SmartConnectionsBridge {
                 `Please install and enable Smart Connections before using Vault RAG Explorer.`
             );
         }
-
         console.log(`${LOG_PREFIX} Smart Connections plugin found — version=${sc.manifest?.version ?? 'unknown'}`);
         return sc;
     }
@@ -43,21 +77,18 @@ export class SmartConnectionsBridge {
      * Resolves the live embed model from SC's smart_env.
      * SC v2+ stores it at smart_env.embed_model or smart_env.smart_embed_model.
      */
-    private getEmbedModel(sc: any): any {
-        const env = sc.smart_env ?? sc.env;
+    private getEmbedModel(sc: ScPluginShape): ScModelShape {
+        const env: ScEnvShape | undefined = sc.smart_env ?? sc.env;
         if (!env) {
             throw new Error(
                 `${LOG_PREFIX} Smart Connections smart_env not initialised yet. ` +
                 `Wait for SC to finish loading before running queries.`
             );
         }
-
         console.log(`${LOG_PREFIX} smart_env found — resolving embed model`);
         console.log(`${LOG_PREFIX} _embed_model on smart_env:`, typeof env._embed_model, env._embed_model ? 'EXISTS' : 'MISSING');
 
-        // SC stores the embed model as _embed_model (private/lazy field).
-        // We check all known variants for forwards/backwards compatibility.
-        const model =
+        const model: ScModelShape | null | undefined =
             env._embed_model ??
             env.embed_model ??
             env.smart_embed_model ??
@@ -81,98 +112,135 @@ export class SmartConnectionsBridge {
         return model;
     }
 
-    /**
-     * Embeds a single query string using SC's live embedding model.
-     * Returns a normalised Float32Array of the same dimensionality as
-     * the stored embeddings in smart_index.db.
-     */
-    async embed(text: string): Promise<Float32Array> {
-        console.log(`${LOG_PREFIX} embed() called — text.length=${text.length}`);
+	/**
+	 * Generates an embedding vector for the provided text using SC's exact model.
+	 *
+	 * @param text The string to embed
+	 * @returns A Float32Array containing the embedding, or throws if unavailable
+	 */
+	public async embed(text: string): Promise<Float32Array> {
+		console.log(`${LOG_PREFIX} embed() called — text.length=${text.length}`);
+		const sc = this.getScPlugin();
+		const model = this.getEmbedModel(sc);
+		let result: unknown;
 
-        const sc = this.getScPlugin();
-        const model = this.getEmbedModel(sc);
+		try {
+			if (typeof model.embed === 'function') {
+				console.log(`${LOG_PREFIX} calling model.embed(text) — SC v2.2+ API`);
+				result = await model.embed(text);
+				console.log(`${LOG_PREFIX} model.embed() returned — type=${typeof result}`);
+			} else if (typeof model.embed_batch === 'function') {
+				console.log(`${LOG_PREFIX} calling model.embed_batch() — SC v2.1 API`);
+				const batch = await model.embed_batch([{ embed_input: text }]);
+				result = batch?.[0];
+				console.log(`${LOG_PREFIX} model.embed_batch() returned batch[0]`);
+			} else if (typeof model.embed_input === 'function') {
+				console.log(`${LOG_PREFIX} calling model.embed_input(text) — SC internal API`);
+				result = await model.embed_input(text);
+				console.log(`${LOG_PREFIX} model.embed_input() returned`);
+			} else {
+				throw new Error(`${LOG_PREFIX} Smart Connections embed model has no embed() or embed_batch() method`);
+			}
+		} catch (err) {
+			console.error(`${LOG_PREFIX} SC embed call failed:`, err);
+			throw err;
+		}
 
-        let result: any;
+		// Normalise result to Float32Array
+		let vec: Float32Array;
+		const r = result as ScEmbedResult | Float32Array | number[] | null | undefined;
+		if (r instanceof Float32Array) {
+			vec = r;
+		} else if (r && 'vec' in r && r.vec instanceof Float32Array) {
+			vec = r.vec;
+		} else if (r && 'data' in r && r.data) {
+			vec = new Float32Array(r.data);
+		} else if (r && 'vec' in r && Array.isArray(r.vec)) {
+			vec = new Float32Array(r.vec);
+		} else if (Array.isArray(r)) {
+			vec = new Float32Array(r);
+		} else {
+			console.error(`${LOG_PREFIX} Unrecognised embed result shape:`, result);
+			throw new Error(`${LOG_PREFIX} Could not extract Float32Array from SC embed result`);
+		}
 
-        // SC's embed API differs slightly across versions:
-        // v2.2+  → model.embed(text)  returns { vec: Float32Array }
-        // v2.1   → model.embed_batch([{embed_input: text}]) returns [{vec: Float32Array}]
-        // older  → model.embed(text) returns Float32Array directly
-        try {
-            if (typeof model.embed === 'function') {
-                console.log(`${LOG_PREFIX} calling model.embed(text) — SC v2.2+ API`);
-                result = await model.embed(text);
-                console.log(`${LOG_PREFIX} model.embed() returned — type=${typeof result} keys=${result ? Object.keys(result).join(',') : 'null'}`);
-            } else if (typeof model.embed_batch === 'function') {
-                console.log(`${LOG_PREFIX} calling model.embed_batch() — SC v2.1 API`);
-                const batch = await model.embed_batch([{ embed_input: text }]);
-                result = batch?.[0];
-                console.log(`${LOG_PREFIX} model.embed_batch() returned batch[0] — type=${typeof result}`);
-            } else if (typeof model.embed_input === 'function') {
-                console.log(`${LOG_PREFIX} calling model.embed_input(text) — SC internal API`);
-                result = await model.embed_input(text);
-                console.log(`${LOG_PREFIX} model.embed_input() returned — type=${typeof result}`);
-            } else {
-                throw new Error(`${LOG_PREFIX} Smart Connections embed model has no embed() or embed_batch() method`);
-            }
-        } catch (err) {
-            console.error(`${LOG_PREFIX} SC embed call failed:`, err);
-            throw err;
-        }
+		const norm = Math.sqrt(vec.reduce((s: number, v: number) => s + v * v, 0));
+		console.log(`${LOG_PREFIX} embed complete — dim=${vec.length} norm=${norm.toFixed(6)}`);
+		return vec;
+	}
 
-        // Normalise result to Float32Array
-        let vec: Float32Array;
-        if (result instanceof Float32Array) {
-            vec = result;
-        } else if (result?.vec instanceof Float32Array) {
-            vec = result.vec;
-        } else if (result?.data) {
-            vec = new Float32Array(result.data);
-        } else if (Array.isArray(result?.vec)) {
-            vec = new Float32Array(result.vec);
-        } else if (Array.isArray(result)) {
-            vec = new Float32Array(result);
-        } else {
-            console.error(`${LOG_PREFIX} Unrecognised embed result shape:`, result);
-            throw new Error(`${LOG_PREFIX} Could not extract Float32Array from SC embed result`);
-        }
+	public getModelName(): string {
+		return this.resolveModelName();
+	}
 
-        const norm = Math.sqrt(vec.reduce((s: number, v: number) => s + v * v, 0));
-        console.log(`${LOG_PREFIX} embed complete — dim=${vec.length} norm=${norm.toFixed(6)}`);
-        return vec;
-    }
+	private resolveModelName(): string {
+		try {
+			const sc = this.getScPlugin();
+			const model = this.getEmbedModel(sc);
+			const name = model.model_key ?? model.model_name ?? model.config?.model_key ?? model.key ?? 'unknown';
+			return name;
+		} catch (err) {
+			console.warn(`${LOG_PREFIX} resolveModelName() failed:`, err);
+			return 'unknown';
+		}
+	}
 
-    private normaliseModelName(raw: string): string {
-        console.log('[SmartConnectionsBridge] raw model name from SC:', raw);
-        const MODEL_NAME_MAP: Record<string, string> = {
-            'TaylorAI/bge':           'TaylorAI/bge-micro-v2',
-            'bge-micro':              'TaylorAI/bge-micro-v2',
-            'bge-micro-v2':           'TaylorAI/bge-micro-v2',
-            'text-embedding-ada-002': 'text-embedding-ada-002',
-        };
-        const normalised = MODEL_NAME_MAP[raw] ?? raw;
-        console.log('[SmartConnectionsBridge] normalised model name:', normalised);
-        return normalised;
-    }
+	public async getEmbedding(text: string): Promise<{ vec: number[] } | null> {
+		const sc = this.getScPlugin();
+		const model = this.getEmbedModel(sc);
+		if (!model) return null;
 
-    private resolveModelName(): string {
-        try {
-            const sc = this.getScPlugin();
-            const model = this.getEmbedModel(sc);
-            const name = model.model_key ?? model.model_name ?? model.config?.model_key ?? 'unknown';
-            return name;
-        } catch (err) {
-            console.warn(`${LOG_PREFIX} resolveModelName() failed:`, err);
-            return 'unknown';
-        }
-    }
+		let result: unknown;
+		try {
+			if (typeof model.embed === 'function') {
+				console.log(`${LOG_PREFIX} calling model.embed(text) — SC v2.2+ API`);
+				result = await model.embed(text);
+				console.log(`${LOG_PREFIX} model.embed() returned — type=${typeof result}`);
+			} else if (typeof model.embed_batch === 'function') {
+				console.log(`${LOG_PREFIX} calling model.embed_batch() — SC v2.1 API`);
+				const batch = await model.embed_batch([{ embed_input: text }]);
+				result = batch?.[0];
+				console.log(`${LOG_PREFIX} model.embed_batch() returned batch[0]`);
+			} else if (typeof model.embed_input === 'function') {
+				console.log(`${LOG_PREFIX} calling model.embed_input(text) — SC internal API`);
+				result = await model.embed_input(text);
+				console.log(`${LOG_PREFIX} model.embed_input() returned`);
+			} else {
+				throw new Error(`${LOG_PREFIX} Smart Connections embed model has no embed() or embed_batch() method`);
+			}
+		} catch (err) {
+			console.error(`${LOG_PREFIX} SC embed call failed:`, err);
+			throw err;
+		}
 
-    /**
-     * Returns the model key SC is currently using, for
-     * validating it matches the stored embeddings in smart_index.db.
-     */
-    getModelName(): string {
-        const raw = this.resolveModelName(); // existing logic unchanged
-        return this.normaliseModelName(raw);
-    }
+		// Normalise result to Float32Array
+		let vec: Float32Array;
+		const r = result as ScEmbedResult | Float32Array | number[] | null | undefined;
+		if (r instanceof Float32Array) {
+			vec = r;
+		} else if (r && 'vec' in r && r.vec instanceof Float32Array) {
+			vec = r.vec;
+		} else if (r && 'data' in r && r.data) {
+			vec = new Float32Array(r.data);
+		} else if (r && 'vec' in r && Array.isArray(r.vec)) {
+			vec = new Float32Array(r.vec);
+		} else if (Array.isArray(r)) {
+			vec = new Float32Array(r);
+		} else {
+			console.error(`${LOG_PREFIX} Unrecognised embed result shape:`, result);
+			throw new Error(`${LOG_PREFIX} Could not extract Float32Array from SC embed result`);
+		}
+
+		const norm = Math.sqrt(vec.reduce((s: number, v: number) => s + v * v, 0));
+		console.log(`${LOG_PREFIX} embed complete — dim=${vec.length} norm=${norm.toFixed(6)}`);
+
+		return { vec: Array.from(vec) };
+	}
+
+	public getEmbeddingModelConfig(): { model_key: string; config: unknown } | null {
+		const sc = this.getScPlugin();
+		const model = this.getEmbedModel(sc);
+		if (!model) return null;
+		return { model_key: model.model_key || model.model_name || 'unknown', config: model.config };
+	}
 }

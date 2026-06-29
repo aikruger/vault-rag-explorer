@@ -26,6 +26,7 @@ import { SessionService } from "./services/SessionService";
 import { RagExportService } from "./services/RagExportService";
 import { WikilinkExpander } from "./db/WikilinkExpander";
 
+interface FileSystemAdapter { basePath: string; }
 const LOG_PREFIX = "[VaultRagExplorerPlugin]";
 
 export default class VaultRagExplorerPlugin extends Plugin {
@@ -87,6 +88,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
+
+
 		this.view = null;
 		if (this.db) {
 			this.db.close();
@@ -113,7 +116,8 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	detectSmartEnvPath(): string | null {
 		const fs = require('fs');
 		const path = require('path');
-		const basePath = (this.app.vault.adapter as any).basePath;
+		const basePath = (this.app.vault.adapter as unknown as FileSystemAdapter).basePath;
+		console.log('[TypeFix] plugin.ts: resolved basePath via FileSystemAdapter', { basePath });
 
 		const candidates = [
 			path.join(basePath, '.smart-env', 'multi'),

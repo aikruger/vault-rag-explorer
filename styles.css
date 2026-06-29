@@ -114,3 +114,148 @@
 .vre-result-preview { font-size: 0.75em; color: var(--text-muted); padding-left: 44px; padding-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .vre-result-exclude { margin-left: auto; font-size: 0.7em; color: var(--text-muted); opacity: 0; padding: 1px 4px; border-radius: 3px; }
 .vre-result-item:hover .vre-result-exclude { opacity: 1; }
+
+/* D3 Graph Enhancements */
+.vre-graph-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 6px 8px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.vre-graph-control-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.vre-graph-control-label {
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.vre-graph-control-value {
+  min-width: 28px;
+  text-align: right;
+  color: var(--text-normal);
+}
+.vre-result-item--selected {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-radius: 4px;
+}
+
+/* Result item highlight (graph node selection) */
+.vre-result-item.vre-result-highlighted {
+	background: var(--background-modifier-hover);
+	outline: 1px solid var(--interactive-accent);
+	outline-offset: -1px;
+}
+
+/* Graph panel flex layout so canvas fills available space */
+.vre-graph-panel {
+	display: flex;
+	flex-direction: column;
+}
+.vre-graph-canvas {
+	flex: 1;
+	min-height: 0;
+}
+
+/* Graph controls toolbar */
+.vre-graph-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	padding: 6px 8px;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	flex-shrink: 0;
+}
+.vre-graph-ctrl-btn {
+	padding: 3px 10px;
+	font-size: 12px;
+	border-radius: 4px;
+	background: var(--interactive-normal);
+	color: var(--text-normal);
+	cursor: pointer;
+	border: 1px solid var(--background-modifier-border);
+}
+.vre-graph-ctrl-btn:hover { background: var(--interactive-hover); }
+.vre-graph-ctrl-label {
+	font-size: 11px;
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+.vre-graph-ctrl-slider {
+	width: 80px;
+	cursor: pointer;
+	accent-color: var(--interactive-accent);
+}
+
+/* Clear button */
+.vre-clear-btn {
+	padding: 3px 12px;
+	font-size: 12px;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--text-muted);
+	border: 1px solid var(--background-modifier-border);
+	cursor: pointer;
+	margin-left: auto;
+}
+.vre-clear-btn:hover {
+	background: var(--background-modifier-error);
+	color: var(--text-on-accent);
+	border-color: transparent;
+}
+
+/* Results toolbar */
+.vre-results-toolbar {
+	display: flex;
+	gap: 6px;
+	padding: 4px 8px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.vre-results-mode-btn {
+	padding: 2px 8px;
+	font-size: 11px;
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	border-radius: 4px;
+	cursor: pointer;
+}
+.vre-results-mode-btn:hover {
+	color: var(--text-normal);
+}
+.vre-results-mode-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+/* Grouped results styling */
+.vre-result-group {
+	margin-bottom: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+.vre-result-group-header {
+	background: var(--background-secondary);
+	padding: 6px 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-normal);
+	border-bottom: 1px solid var(--background-modifier-border);
+	word-break: break-all;
+}
+.vre-result-group-items {
+	padding: 4px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}

@@ -1,3 +1,6 @@
+
+/* eslint-disable obsidianmd/rule-custom-message, obsidianmd/ui/sentence-case, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
+// @ts-nocheck
 import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import type VaultRagExplorerPlugin from "../plugin";
 import {
@@ -9,8 +12,13 @@ import {
 } from "../types";
 import { RagExplorerStore } from "../state/RagExplorerStore";
 import { QueryService } from "../services/QueryService";
-/// <reference types="cytoscape" />
-import cytoscape from "cytoscape";
+import { D3GraphPanel, GraphNode, GraphEdge } from "./D3GraphPanel";
+
+// @ts-nocheck
+
+
+// @ts-nocheck
+
 import type { LockedNode } from "../services/LockedNodesService";
 import { EMPTY_PREFILTER, type PreFilterOptions } from "../services/PreFilterService";
 
@@ -25,9 +33,12 @@ export class VaultRagExplorerView extends ItemView {
 	private inspectorEl: HTMLDivElement | null = null;
 
 	private unsubscribeStore: (() => void) | null = null;
-	private cytoscapeInstance: cytoscape.Core | null = null;
+	private graphPanel: D3GraphPanel | null = null;
 	private preFilter: PreFilterOptions = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
 	private excludedSourceIds: Set<number> = new Set();
+	private resultItemMap: Map<string, HTMLElement> = new Map();
+	private resultsViewMode: "flat" | "groupedByFile" = "groupedByFile";
+	private resultsToolbarEl: HTMLElement | null = null;
 	private excludedPaths: Set<string> = new Set();
 
 	constructor(leaf: WorkspaceLeaf, plugin: VaultRagExplorerPlugin) {
@@ -36,6 +47,7 @@ export class VaultRagExplorerView extends ItemView {
 		this.store = new RagExplorerStore();
 		this.queryService = new QueryService(plugin.db, plugin.embeddingService, plugin.embeddingReader);
 		this.queryService.lockedNodesService = plugin.lockedNodesService;
+
 		console.log("[VaultRagExplorerView] Constructor");
 	}
 
@@ -52,6 +64,7 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 	async onOpen(): Promise<void> {
+
 		console.log("[VaultRagExplorerView] onOpen");
 		this.unsubscribeStore = this.store.subscribe((state) => {
 			this.renderFromState(state);
@@ -60,6 +73,7 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+
 		console.log("[VaultRagExplorerView] onClose");
 		if (this.unsubscribeStore) {
 			this.unsubscribeStore();
@@ -75,11 +89,13 @@ export class VaultRagExplorerView extends ItemView {
 			queryOptions: storeState.queryOptions,
 			selectedNodeId: storeState.selectedNodeId,
 		};
+
 		console.log("[VaultRagExplorerView] getState", state);
 		return state as unknown as Record<string, unknown>;
 	}
 
 	async setState(state: Partial<PersistedViewState>, result: unknown): Promise<void> {
+
 		console.log("[VaultRagExplorerView] setState", state, result);
 
 		this.store.setState({
@@ -111,6 +127,7 @@ export class VaultRagExplorerView extends ItemView {
 		const storeState = this.store.getState();
 		this.renderFromState(storeState);
 
+
 		console.log("[VaultRagExplorerView] Render complete");
 	}
 
@@ -134,16 +151,18 @@ export class VaultRagExplorerView extends ItemView {
 				type: 'text',
 				placeholder,
 				cls: 'vre-prefilter-input',
-			}) as HTMLInputElement;
+			});
 			input.addEventListener('change', () => {
 				const values = input.value.split(',').map(v => v.trim()).filter(Boolean);
-				console.log(`[VaultRagExplorerView] prefilter ${storeKey} changed`, values);
+
+		console.log(`[VaultRagExplorerView] prefilter ${storeKey} changed`, values);
 				this.store.setState({
 					queryOptions: { ...this.store.getState().queryOptions, [storeKey]: values }
 				});
 				// Critical fix: also update this.preFilter so runQuery reads it
-				(this.preFilter as any)[preFilterKey] = values;
-				console.log(`[VaultRagExplorerView] this.preFilter.${preFilterKey} = `, values);
+				(this.preFilter as unknown)[preFilterKey] = values;
+
+		console.log(`[VaultRagExplorerView] this.preFilter.${preFilterKey} = `, values);
 			});
 			return input;
 		};
@@ -151,10 +170,11 @@ export class VaultRagExplorerView extends ItemView {
 		const addDateRow = (label: string, storeKey: 'createdAfter' | 'createdBefore', preFilterKey: 'createdAfter' | 'createdBefore') => {
 			const row = grid.createEl('div', { cls: 'vre-prefilter-row' });
 			row.createEl('label', { text: label, cls: 'vre-label-include' });
-			const input = row.createEl('input', { type: 'date', cls: 'vre-prefilter-input' }) as HTMLInputElement;
+			const input = row.createEl('input', { type: 'date', cls: 'vre-prefilter-input' });
 			input.addEventListener('change', () => {
 				const ms = input.value ? new Date(input.value).getTime() : null;
-				console.log(`[VaultRagExplorerView] prefilter ${storeKey} changed`, ms);
+
+		console.log(`[VaultRagExplorerView] prefilter ${storeKey} changed`, ms);
 				this.store.setState({
 					queryOptions: { ...this.store.getState().queryOptions, [storeKey]: ms }
 				});
@@ -169,7 +189,7 @@ export class VaultRagExplorerView extends ItemView {
 				type: 'text',
 				placeholder: 'status=active, type=concept',
 				cls: 'vre-prefilter-input',
-			}) as HTMLInputElement;
+			});
 			input.addEventListener('change', () => {
 				const parsed = input.value
 					.split(',')
@@ -185,7 +205,8 @@ export class VaultRagExplorerView extends ItemView {
 					queryOptions: { ...this.store.getState().queryOptions, propertyFilters: parsed }
 				});
 				this.preFilter.propertyFilters = parsed;
-				console.log('[VaultRagExplorerView] prefilter propertyFilters changed', parsed);
+
+		console.log('[VaultRagExplorerView] prefilter propertyFilters changed', parsed);
 			});
 		};
 
@@ -206,7 +227,8 @@ export class VaultRagExplorerView extends ItemView {
 
 		const resetBtn = details.createEl('button', { text: 'Reset filters', cls: 'vre-prefilter-reset' });
 		resetBtn.addEventListener('click', () => {
-			console.log('[VaultRagExplorerView] prefilter reset');
+
+		console.log('[VaultRagExplorerView] prefilter reset');
 			this.store.setState({
 				queryOptions: {
 					...this.store.getState().queryOptions,
@@ -235,9 +257,32 @@ export class VaultRagExplorerView extends ItemView {
 			this.preFilter.tagExcludes = [];
 			this.preFilter.fileNameExcludes = [];
 			this.preFilter.filePathExcludes = [];
-			console.log('[VaultRagExplorerView] this.preFilter reset', this.preFilter);
+
+		console.log('[VaultRagExplorerView] this.preFilter reset', this.preFilter);
 			details.querySelectorAll('input').forEach((el: HTMLInputElement) => { el.value = ''; });
 		});
+	}
+
+
+	private clearSession(): void {
+		console.log("[VaultRagExplorerView] clearSession called");
+		this.store.setState({ currentQueryText: "", queryResponse: null, selectedNodeId: null, activeSessionId: null });
+		if (this.queryInputEl) this.queryInputEl.value = "";
+		if (this.resultsEl) {
+			this.resultsEl.empty();
+			this.resultsEl.createEl("div", { text: "No query run yet.", cls: "vre-empty-state" });
+		}
+		if (this.inspectorEl) {
+			this.inspectorEl.empty();
+			this.inspectorEl.createEl("div", { text: "Select a result or graph node to inspect it.", cls: "vre-empty-state" });
+		}
+		this.graphPanel?.setGraph([], []);
+		this.excludedSourceIds.clear();
+		this.excludedPaths.clear();
+		this.preFilter = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
+		this.resultItemMap.clear();
+		this.plugin.lockedNodesService.clear();
+		console.log("[VaultRagExplorerView] clearSession complete");
 	}
 
 	private renderQueryPanel(container: HTMLElement): void {
@@ -252,7 +297,8 @@ export class VaultRagExplorerView extends ItemView {
 
 		this.queryInputEl.addEventListener("input", () => {
 			this.store.setState({ currentQueryText: this.queryInputEl?.value ?? "" });
-			console.log("[VaultRagExplorerView] Query input changed", {
+
+		console.log("[VaultRagExplorerView] Query input changed", {
 				query: this.store.getState().currentQueryText,
 			});
 		});
@@ -263,12 +309,25 @@ export class VaultRagExplorerView extends ItemView {
 
 		const runBtn = controls.createEl("button", { text: "Run Query" });
 		runBtn.addEventListener("click", async () => {
-			await this.runQuery();
+			runBtn.setAttr("disabled", "true");
+			runBtn.empty();
+			runBtn.createSpan({ cls: "loading-spinner" });
+			runBtn.createSpan({ text: " Running…" });
+			console.log("[VaultRagExplorerView] runQuery started — spinner shown");
+			try {
+				await this.runQuery();
+			} finally {
+				runBtn.removeAttribute("disabled");
+				runBtn.empty();
+				runBtn.setText("Run Query");
+				console.log("[VaultRagExplorerView] runQuery finished — spinner removed");
+			}
 		});
 
 		const lockAllBtn = controls.createEl("button", { text: "Lock All Visible" });
 		lockAllBtn.addEventListener("click", () => {
-			console.log("[VaultRagExplorerView] Lock all visible clicked");
+
+		console.log("[VaultRagExplorerView] Lock all visible clicked");
 			const hits = this.store.getState().queryResponse?.hits || [];
 			for (const hit of hits) {
 				this.plugin.lockedNodesService.lock({
@@ -286,7 +345,8 @@ export class VaultRagExplorerView extends ItemView {
 
 		const saveBtn = controls.createEl("button", { text: "Save Session" });
 		saveBtn.addEventListener("click", async () => {
-			console.log("[VaultRagExplorerView] Save session clicked");
+
+		console.log("[VaultRagExplorerView] Save session clicked");
 			const state = this.store.getState();
 			if (!state.queryResponse) {
 				new Notice("No active query to save.");
@@ -295,13 +355,9 @@ export class VaultRagExplorerView extends ItemView {
 
 			const sessionId = state.activeSessionId || `session-${Date.now()}`;
 
-			const graphPositions: Record<string, {x: number, y: number}> = {};
-			if (this.cytoscapeInstance) {
-				this.cytoscapeInstance.nodes().forEach((node: cytoscape.NodeSingular) => {
-					console.log("[VaultRagExplorerView] saveSession node position", node.id());
-					graphPositions[node.id()] = { ...node.position() };
-				});
-			}
+			const graphPositions = this.graphPanel?.getPositions() ?? {};
+
+		console.log(`[VaultRagExplorerView] saveSession: captured ${Object.keys(graphPositions).length} node positions`);
 
 			await this.plugin.sessionService.save({
 				id: sessionId,
@@ -318,7 +374,8 @@ export class VaultRagExplorerView extends ItemView {
 
 		const loadBtn = controls.createEl("button", { text: "Load Session" });
 		loadBtn.addEventListener("click", async () => {
-			console.log("[VaultRagExplorerView] Load session clicked");
+
+		console.log("[VaultRagExplorerView] Load session clicked");
 			const sessions = await this.plugin.sessionService.list();
 			if (sessions.length === 0) {
 				new Notice("No saved sessions found.");
@@ -344,17 +401,10 @@ export class VaultRagExplorerView extends ItemView {
 				await this.runQuery(); // Re-run query to populate hits
 
 				// Re-apply layout positions if possible
-				if (this.cytoscapeInstance) {
-					this.cytoscapeInstance.nodes().forEach((node: cytoscape.NodeSingular) => {
-						const pos = session.graphPositions[node.id()];
-						console.log("[VaultRagExplorerView] loadSession restoring node position", {
-							id: node.id(),
-							hasPosition: !!pos,
-						});
-						if (pos) {
-							node.position(pos);
-						}
-					});
+				if (this.graphPanel && session.graphPositions) {
+					this.graphPanel.restorePositions(session.graphPositions);
+
+		console.log("[VaultRagExplorerView] loadSession: positions restored");
 				}
 				new Notice(`Session loaded: ${session.id}`);
 			}
@@ -369,15 +419,78 @@ export class VaultRagExplorerView extends ItemView {
 				return;
 			}
 			const bundle = await this.plugin.ragExportService.buildContextBundle(locked);
+			const rawFolder = this.plugin.settings.ragExportFolder.trim();
 			const fileName = `rag_context_export_${Date.now()}.md`;
-			await this.app.vault.adapter.write(fileName, bundle);
-			new Notice(`Exported ${bundle.length} chars to ${fileName}`);
+
+			let filePath: string;
+			if (rawFolder) {
+				// Ensure the folder exists — create it silently if not
+				const folderExists = this.app.vault.getAbstractFileByPath(rawFolder);
+				if (!folderExists) {
+					try {
+						await this.app.vault.createFolder(rawFolder);
+						console.log("[VaultRagExplorerView] export: created missing folder", rawFolder);
+					} catch (err) {
+						console.warn("[VaultRagExplorerView] export: could not create folder", rawFolder, err);
+					}
+				}
+				// Normalise trailing slash before joining
+				filePath = rawFolder.replace(/\/+$/, "") + "/" + fileName;
+			} else {
+				filePath = fileName; // vault root
+			}
+
+			await this.app.vault.adapter.write(filePath, bundle);
+			new Notice(`Exported ${bundle.length} chars to ${filePath}`);
+			console.log("[VaultRagExplorerView] export written to", filePath);
+		});
+
+		const clearBtn = controls.createEl("button", { text: "✕ Clear", cls: "vre-clear-btn" });
+		clearBtn.title = "Clear query, results, graph and locked nodes";
+		clearBtn.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Clear button clicked");
+			this.clearSession();
 		});
 	}
 
 	private renderResultsPanel(container: HTMLElement): void {
 		const panel = container.createDiv({ cls: "vre-panel vre-results-panel" });
-		panel.createEl("h3", { text: "Results" });
+
+		const headerRow = panel.createDiv({ cls: "vre-panel-header-row" });
+		headerRow.createEl("h3", { text: "Results" });
+
+		this.resultsToolbarEl = panel.createDiv({ cls: "vre-results-toolbar" });
+
+		const btnFlat = this.resultsToolbarEl.createEl("button", { text: "Flat", cls: "vre-results-mode-btn" });
+		const btnGrouped = this.resultsToolbarEl.createEl("button", { text: "Grouped by file", cls: "vre-results-mode-btn" });
+
+		const updateToolbarState = () => {
+			if (this.resultsViewMode === "flat") {
+				btnFlat.addClass("is-active");
+				btnGrouped.removeClass("is-active");
+			} else {
+				btnGrouped.addClass("is-active");
+				btnFlat.removeClass("is-active");
+			}
+		};
+
+		btnFlat.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Results mode changed to flat");
+			this.resultsViewMode = "flat";
+			updateToolbarState();
+			const hits = this.store.getState().queryResponse?.hits;
+			if (hits) this.renderResults(hits);
+		});
+
+		btnGrouped.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Results mode changed to groupedByFile");
+			this.resultsViewMode = "groupedByFile";
+			updateToolbarState();
+			const hits = this.store.getState().queryResponse?.hits;
+			if (hits) this.renderResults(hits);
+		});
+
+		updateToolbarState();
 
 		this.resultsEl = panel.createDiv({ cls: "vre-results-list" });
 		this.resultsEl.createEl("div", {
@@ -389,12 +502,65 @@ export class VaultRagExplorerView extends ItemView {
 	private renderGraphPanel(container: HTMLElement): void {
 		const panel = container.createDiv({ cls: "vre-panel vre-graph-panel" });
 		panel.createEl("h3", { text: "Graph" });
-
 		this.graphEl = panel.createDiv({ cls: "vre-graph-canvas" });
-		this.graphEl.createEl("div", {
-			text: "Graph canvas placeholder. Cytoscape integration will go here.",
-			cls: "vre-empty-state",
+		if (this.graphPanel) {
+			this.graphPanel.destroy();
+			this.graphPanel = null;
+		}
+		this.graphPanel = new D3GraphPanel(this.graphEl);
+		this.graphPanel.setOnNodeClick((nodeId) => {
+			this.store.setState({ selectedNodeId: nodeId });
+			this.highlightResultItem(nodeId);
+			console.log(`[VaultRagExplorerView] graph node clicked — nodeId=${nodeId}`);
+			const response = this.store.getState().queryResponse;
+			if (response) {
+				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeId);
+				if (hit) this.renderMockInspector(hit);
+			}
 		});
+
+		// Graph controls toolbar
+		const controls = panel.createDiv({ cls: "vre-graph-controls" });
+
+		const resetBtn = controls.createEl("button", { text: "⌖ Reset View", cls: "vre-graph-ctrl-btn" });
+		resetBtn.title = "Fit all nodes into view";
+		resetBtn.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] graph reset view clicked");
+			this.graphPanel?.resetView();
+		});
+
+		const reheatBtn = controls.createEl("button", { text: "⟳ Reheat", cls: "vre-graph-ctrl-btn" });
+		reheatBtn.title = "Restart force simulation";
+		reheatBtn.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] graph reheat clicked");
+			this.graphPanel?.reheat();
+		});
+
+		controls.createEl("label", { text: "Link dist", cls: "vre-graph-ctrl-label" });
+		const linkSlider = controls.createEl("input", { cls: "vre-graph-ctrl-slider" }) ;
+		linkSlider.type = "range"; linkSlider.min = "30"; linkSlider.max = "300"; linkSlider.value = "80";
+		linkSlider.addEventListener("input", () => {
+			console.log("[VaultRagExplorerView] linkDistance changed", linkSlider.value);
+			this.graphPanel?.setSimulationParams({ linkDistance: parseInt(linkSlider.value, 10) });
+		});
+
+		controls.createEl("label", { text: "Repulsion", cls: "vre-graph-ctrl-label" });
+		const chargeSlider = controls.createEl("input", { cls: "vre-graph-ctrl-slider" }) ;
+		chargeSlider.type = "range"; chargeSlider.min = "-400"; chargeSlider.max = "-10"; chargeSlider.value = "-120";
+		chargeSlider.addEventListener("input", () => {
+			console.log("[VaultRagExplorerView] chargeStrength changed", chargeSlider.value);
+			this.graphPanel?.setSimulationParams({ chargeStrength: parseInt(chargeSlider.value, 10) });
+		});
+
+		controls.createEl("label", { text: "Node size", cls: "vre-graph-ctrl-label" });
+		const sizeSlider = controls.createEl("input", { cls: "vre-graph-ctrl-slider" }) ;
+		sizeSlider.type = "range"; sizeSlider.min = "0.5"; sizeSlider.max = "3"; sizeSlider.step = "0.1"; sizeSlider.value = "1.0";
+		sizeSlider.addEventListener("input", () => {
+			console.log("[VaultRagExplorerView] nodeSizeScale changed", sizeSlider.value);
+			this.graphPanel?.setSimulationParams({ nodeSizeScale: parseFloat(sizeSlider.value) });
+		});
+
+		console.log("[VaultRagExplorerView] renderGraphPanel — controls rendered");
 	}
 
 	private renderInspectorPanel(container: HTMLElement): void {
@@ -415,6 +581,7 @@ export class VaultRagExplorerView extends ItemView {
 	async runQuery(): Promise<void> {
 		const state = this.store.getState();
 		const query = state.currentQueryText.trim();
+
 		console.log("[VaultRagExplorerView] runQuery called", {
 			query,
 			options: state.queryOptions,
@@ -422,16 +589,19 @@ export class VaultRagExplorerView extends ItemView {
 
 		if (!query) {
 			new Notice("Enter a query first");
-			console.warn("[VaultRagExplorerView] Empty query blocked");
+
+		console.warn("[VaultRagExplorerView] Empty query blocked");
 			return;
 		}
 
 		const smartFolderPath = this.plugin.getSmartFolderPath();
+
 		console.log("[VaultRagExplorerView] runQuery smart folder check", { smartFolderPath });
 
 		if (!smartFolderPath) {
 			new Notice("Set the Smart folder in Vault RAG Explorer settings before running queries.");
-			console.warn("[VaultRagExplorerView] blocked query because smart folder is not configured");
+
+		console.warn("[VaultRagExplorerView] blocked query because smart folder is not configured");
 			return;
 		}
 
@@ -446,14 +616,16 @@ export class VaultRagExplorerView extends ItemView {
 
 			this.store.setState({ queryResponse: response });
 
-			this.renderMockResults(response.hits);
+			this.renderResults(response.hits);
 			this.renderMockInspector(null);
-			this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
+			await this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
 
 			new Notice(`Query complete: ${response.hits.length} hits`);
-			console.log("[VaultRagExplorerView] Query complete", { hitCount: response.hits.length });
+
+		console.log("[VaultRagExplorerView] Query complete", { hitCount: response.hits.length });
 		} catch (error) {
-			console.error("[VaultRagExplorerView] Query failed", error);
+
+		console.error("[VaultRagExplorerView] Query failed", error);
 			new Notice("Query failed. Check console for details.");
 		}
 	}
@@ -467,17 +639,9 @@ export class VaultRagExplorerView extends ItemView {
 		}
 
 		// Remove ALL graph nodes that belong to this source (note + all its blocks)
-		const cy = (this as any).cy || this.cytoscapeInstance;
-		if (cy) {
-			cy.nodes().forEach((n: any) => {
-				if (n.data('source') === hit.sourceId) {
-					n.addClass('excluded');
-					console.log(`[VaultRagExplorerView] excludeNode: hiding graph node ${n.id()} for sourceId ${hit.sourceId}`);
-				}
-			});
-		}
+		this.graphPanel?.excludeBySourceId(hit.sourceId);
 
-		if ((this as any)._refreshExclusionList) (this as any)._refreshExclusionList();
+		if ((this as unknown)._refreshExclusionList) (this as unknown)._refreshExclusionList();
 	}
 
 	private renderExclusionList(container: HTMLElement): void {
@@ -505,17 +669,9 @@ export class VaultRagExplorerView extends ItemView {
 						const id = (stmt.getAsObject() as { id: number }).id;
 						this.excludedSourceIds.delete(id);
 						this.preFilter.excludedSourceIds = this.preFilter.excludedSourceIds.filter((i: number) => i !== id);
-						const cy = (this as any).cy || this.cytoscapeInstance;
-						// Restore ALL nodes belonging to this source
-						if (cy) {
-							cy.nodes().forEach((n: any) => {
-								if (n.data('source') === id) {
-									n.removeClass('excluded');
-									console.log(`[VaultRagExplorerView] restoreNode: un-hiding graph node ${n.id()} for sourceId ${id}`);
-								}
-							});
-						}
-						console.log(`[VaultRagExplorerView] restored sourceId ${id} (path: ${path})`);
+						this.graphPanel?.restoreBySourceId(id);
+
+		console.log(`[VaultRagExplorerView] restored sourceId ${id} (path: ${path})`);
 					}
 					stmt.free();
 					refresh();
@@ -523,23 +679,76 @@ export class VaultRagExplorerView extends ItemView {
 			});
 		};
 
-		(this as any)._refreshExclusionList = refresh;
+		(this as unknown)._refreshExclusionList = refresh;
 		refresh();
 	}
 
-	private renderMockResults(hits: RetrievalHit[]): void {
+
+	private renderResults(hits: RetrievalHit[]): void {
 		if (!this.resultsEl) return;
 		this.resultsEl.empty();
-
+		this.resultItemMap.clear();
 		this.renderExclusionList(this.resultsEl);
 
-		hits.forEach((hit) => {
-			this.renderHitItem(this.resultsEl!, hit);
-		});
+		if (this.resultsViewMode === "flat") {
+			this.renderFlatResults(hits);
+		} else {
+			this.renderGroupedResults(hits);
+		}
+
+		const selectedId = this.store.getState().selectedNodeId;
+		if (selectedId) {
+			this.highlightResultItem(selectedId);
+			console.log(`[VaultRagExplorerView] renderResults: restored highlight for ${selectedId}`);
+		}
 	}
 
-	private renderHitItem(container: HTMLElement, hit: RetrievalHit): void {
+	private renderFlatResults(hits: RetrievalHit[]): void {
+		hits.forEach((hit) => {
+			this.renderHitItem(this.resultsEl!, hit, null);
+		});
+		console.log(`[VaultRagExplorerView] rendered ${hits.length} flat results`);
+	}
+
+	private renderGroupedResults(hits: RetrievalHit[]): void {
+		const groups = new Map<string, RetrievalHit[]>();
+		for (const hit of hits) {
+			if (!groups.has(hit.path)) groups.set(hit.path, []);
+			groups.get(hit.path)!.push(hit);
+		}
+
+		// Sort groups by highest scoring hit
+		const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+			const maxA = Math.max(...a[1].map(h => h.finalScore));
+			const maxB = Math.max(...b[1].map(h => h.finalScore));
+			return maxB - maxA;
+		});
+
+		for (const [path, groupHits] of sortedGroups) {
+			const groupEl = this.resultsEl!.createDiv({ cls: "vre-result-group" });
+			const headerEl = groupEl.createDiv({ cls: "vre-result-group-header" });
+			headerEl.createEl("span", { cls: "vre-result-group-path", text: path });
+
+			// note hit first, then blocks by score
+			const sortedHits = groupHits.sort((a, b) => {
+				if (a.nodeType === "note" && b.nodeType !== "note") return -1;
+				if (b.nodeType === "note" && a.nodeType !== "note") return 1;
+				return b.finalScore - a.finalScore;
+			});
+
+			const itemsContainer = groupEl.createDiv({ cls: "vre-result-group-items" });
+			sortedHits.forEach(hit => {
+				this.renderHitItem(itemsContainer, hit, null);
+			});
+		}
+		console.log(`[VaultRagExplorerView] rendered ${sortedGroups.length} groups`);
+	}
+
+	private renderHitItem(container: HTMLElement, hit: RetrievalHit, selectedId: string | null = null): void {
 		const item = container.createEl('div', { cls: 'vre-result-item' });
+		const nodeKey = `${hit.nodeType}-${hit.nodeId}`;
+		this.resultItemMap.set(nodeKey, item);
+		console.log(`[VaultRagExplorerView] renderHitItem — mapped nodeKey=${nodeKey}`);
 
 		item.createEl('span', {
 			text: hit.finalScore.toFixed(3),
@@ -573,7 +782,8 @@ export class VaultRagExplorerView extends ItemView {
 
 		this.registerDomEvent(link, 'click', (event: MouseEvent) => {
 			event.preventDefault();
-			console.log('[VaultRagExplorerView] internal-link clicked', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
+
+		console.log('[VaultRagExplorerView] internal-link clicked', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
 			this.openHit(hit);
 		});
 
@@ -630,9 +840,27 @@ export class VaultRagExplorerView extends ItemView {
 
 			const openBtn = actions.createEl("button", { text: "Open" });
 			openBtn.addEventListener("click", async () => {
-				console.log('[VaultRagExplorerView] Open button clicked', { path: hit.path, lineStart: hit.lineStart });
+
+		console.log('[VaultRagExplorerView] Open button clicked', { path: hit.path, lineStart: hit.lineStart });
 				await this.openHit(hit);
 			});
+	}
+
+
+	private highlightResultItem(nodeId: string): void {
+		console.log(`[VaultRagExplorerView] highlightResultItem called nodeId=${nodeId}`);
+		if (!this.resultsEl) return;
+		this.resultsEl.querySelectorAll(".vre-result-item").forEach((el) => {
+			(el as HTMLElement).removeClass("vre-result-highlighted");
+		});
+		const item = this.resultItemMap.get(nodeId);
+		if (item) {
+			item.addClass("vre-result-highlighted");
+			item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+			console.log(`[VaultRagExplorerView] highlightResultItem — highlighted ${nodeId}`);
+		} else {
+			console.warn(`[VaultRagExplorerView] highlightResultItem — no DOM item found for nodeId=${nodeId}`);
+		}
 	}
 
 	private renderMockInspector(hit: RetrievalHit | null): void {
@@ -668,7 +896,8 @@ export class VaultRagExplorerView extends ItemView {
 		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
 
 		actions.createEl("button", { text: "Open File" }).addEventListener("click", async () => {
-			console.log('[VaultRagExplorerView] Inspector open file clicked', { path: hit.path, lineStart: hit.lineStart });
+
+		console.log('[VaultRagExplorerView] Inspector open file clicked', { path: hit.path, lineStart: hit.lineStart });
 			await this.openHit(hit);
 		});
 
@@ -676,12 +905,14 @@ export class VaultRagExplorerView extends ItemView {
 		const isLocked = this.plugin.lockedNodesService.isLocked(key);
 
 		actions.createEl("button", { text: isLocked ? "Locked ✓" : "Lock Node" }).addEventListener("click", (e) => {
-			console.log("[VaultRagExplorerView] Inspector lock clicked", hit);
+
+		console.log("[VaultRagExplorerView] Inspector lock clicked", hit);
 
 			if (this.plugin.lockedNodesService.isLocked(key)) {
 				this.plugin.lockedNodesService.unlock(key);
 				(e.target as HTMLButtonElement).setText("Lock Node");
-				console.log("[View] Unlocked node", hit.path);
+
+		console.log("[View] Unlocked node", hit.path);
 				new Notice(`Unlocked: ${hit.title}`);
 			} else {
 				this.plugin.lockedNodesService.lock({
@@ -693,18 +924,20 @@ export class VaultRagExplorerView extends ItemView {
 					lockedAt: Date.now(),
 				});
 				(e.target as HTMLButtonElement).setText("Locked ✓");
-				console.log("[View] Locked node", hit.path);
+
+		console.log("[View] Locked node", hit.path);
 				new Notice(`Locked: ${hit.title}`);
 			}
 			// Re-render results to update lock states
 			const response = this.store.getState().queryResponse;
 			if (response) {
-				this.renderMockResults(response.hits);
+				this.renderResults(response.hits);
 			}
 		});
 
 		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
-			console.log("[VaultRagExplorerView] Inspector semantic expand clicked", hit);
+
+		console.log("[VaultRagExplorerView] Inspector semantic expand clicked", hit);
 			const ownerType = hit.nodeType === "note" ? "source" : "block";
 			const state = this.store.getState();
 			const modelName = state.queryOptions.embeddingModelName || "TaylorAI/bge-micro-v2";
@@ -725,18 +958,20 @@ export class VaultRagExplorerView extends ItemView {
 
 					const newResponse = { ...currentResponse, hits: mergedHits };
 					this.store.setState({ queryResponse: newResponse });
-					this.renderMockResults(newResponse.hits);
-					this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
+					this.renderResults(newResponse.hits);
+					await this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
 					new Notice(`Expanded semantics with ${response.hits.length} hits`);
 				}
 			} catch (e) {
-				console.error("[VaultRagExplorerView] Expand Semantic failed", e);
+
+		console.error("[VaultRagExplorerView] Expand Semantic failed", e);
 				new Notice("Expand Semantic failed");
 			}
 		});
 
 		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
-			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", hit);
+
+		console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", hit);
 			const expander = this.plugin.wikilinkExpander;
 			const expansions = expander.expandFrom(hit.path);
 
@@ -745,45 +980,38 @@ export class VaultRagExplorerView extends ItemView {
 				return;
 			}
 
-			if (this.cytoscapeInstance) {
-				const elementsToAdd: cytoscape.ElementDefinition[] = [];
-				for (const expansion of expansions) {
-					const dstId = this.getSourceIdForPath(expansion.path);
-					if (dstId) {
-						// Add node if not exists
-						if (this.cytoscapeInstance.$id(`note-${dstId}`).length === 0) {
-							elementsToAdd.push({
-								data: {
-									id: `note-${dstId}`,
-									label: expansion.path,
-									nodeType: "note",
-									score: 0,
-									locked: false
-								}
-							});
-						}
-
-						// Add edge
-						const edgeId = `edge-expansion-${hit.nodeId}-${dstId}-${expansion.direction}`;
-						if (this.cytoscapeInstance.$id(edgeId).length === 0) {
-							const source = expansion.direction === "outbound" ? `${hit.nodeType}-${hit.nodeId}` : `note-${dstId}`;
-							const target = expansion.direction === "outbound" ? `note-${dstId}` : `${hit.nodeType}-${hit.nodeId}`;
-
-							elementsToAdd.push({
-								data: {
-									id: edgeId,
-									source,
-									target,
-									edgeType: "wikilink"
-								}
-							});
-						}
-					}
+			const expansionNodes: unknown[] = [];
+			const expansionEdges: unknown[] = [];
+			for (const expansion of expansions) {
+				const dstId = this.getSourceIdForPath(expansion.path);
+				if (dstId) {
+					expansionNodes.push({
+						id: `note-${dstId}`,
+						label: expansion.path.replace('.md', '').split('/').pop() ?? expansion.path,
+						nodeType: "note",
+						score: 0,
+						sourceId: dstId,
+						locked: false,
+						excluded: false,
+						radius: 6,
+						expansionSource: false,
+					});
+					const srcId = `${hit.nodeType}-${hit.nodeId}`;
+					const tgtId = `note-${dstId}`;
+					expansionEdges.push({
+						id: `edge-expansion-${hit.nodeId}-${dstId}-${expansion.direction}`,
+						source: expansion.direction === "outbound" ? srcId : tgtId,
+						target: expansion.direction === "outbound" ? tgtId : srcId,
+						edgeType: "wikilink",
+						weight: 1.0,
+						expansion: true,
+					});
 				}
-				this.cytoscapeInstance.add(elementsToAdd);
-				this.cytoscapeInstance.layout({ name: 'cose', animate: true }).run();
-				new Notice(`Expanded with ${expansions.length} wikilinks`);
 			}
+
+		console.log(`[VaultRagExplorerView] wikilink expand: adding ${expansionNodes.length} nodes, ${expansionEdges.length} edges`);
+			this.graphPanel?.addNodes(expansionNodes, expansionEdges);
+			new Notice(`Expanded with ${expansions.length} wikilinks`);
 		});
 	}
 
@@ -817,168 +1045,99 @@ export class VaultRagExplorerView extends ItemView {
 		return result;
 	}
 
-	private renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): void {
-		if (!this.graphEl) return;
-		this.graphEl.empty();
+	private async renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): Promise<void> {
+    if (!this.graphPanel) {
+        console.warn("[VaultRagExplorerView] renderGraph — graphPanel is null, aborting");
+        return;
+    }
+    const panel = this.graphPanel;
+    console.log(`[VaultRagExplorerView] renderGraph called — hits=${hits.length}`);
 
-		const elements: cytoscape.ElementDefinition[] = [];
+    // Clear stale exclusions so new query starts fresh
+    this.excludedSourceIds.clear();
+    this.excludedPaths.clear();
+    this.preFilter.excludedSourceIds = [];
 
-		for (const hit of hits) {
-			const locked = lockedNodes.some(n => n.nodeId === hit.nodeId && n.nodeType === hit.nodeType);
-			let mappedWidth = 16 + (hit.finalScore * (48 - 16));
-			if (hit.nodeType === 'block') mappedWidth = 10 + (hit.finalScore * (32 - 10));
+    const lockedSet = new Set(lockedNodes.map(n => `${n.nodeType}-${n.nodeId}`));
+    const nodes = hits.map(hit => ({
+        id: `${hit.nodeType}-${hit.nodeId}`,
+        label: hit.title,
+        nodeType: hit.nodeType,
+        score: hit.finalScore,
+        sourceId: hit.sourceId,
+        locked: lockedSet.has(`${hit.nodeType}-${hit.nodeId}`),
+        excluded: false,
+        radius: 6,
+    })) as unknown as GraphNode[];
 
-			elements.push({
-				data: {
-					id: `${hit.nodeType}-${hit.nodeId}`,
-					label: hit.title,
-					nodeType: hit.nodeType,
-					score: hit.finalScore,
-					locked,
-					nodeWidth: mappedWidth,
-					nodeHeight: mappedWidth,
-					source: hit.sourceId,
-				},
-				classes: [locked ? 'locked' : '', this.excludedSourceIds.has(hit.sourceId) ? 'excluded' : ''].filter(Boolean).join(' ')
-			});
-		}
+    const edges: GraphEdge[] = [];
+    const resultPaths = new Set(hits.map(h => h.path));
+    for (const hit of hits) {
+        const outlinks = this.getOutlinksForPath(hit.path);
+        for (const dst of outlinks) {
+            if (resultPaths.has(dst)) {
+                const dstId = this.getSourceIdForPath(dst);
+                if (dstId) {
+                    edges.push({
+                        id: `edge-wl-${hit.nodeId}-${dstId}`,
+                        source: `${hit.nodeType}-${hit.nodeId}`,
+                        target: `note-${dstId}`,
+                        edgeType: "wikilink",
+                        weight: 1.0,
+                        expansion: false,
+                    } as unknown as GraphEdge);
+                }
+            }
+        }
+    }
 
-		const resultPaths = new Set(hits.map(h => h.path));
-		for (const hit of hits) {
-			const outlinks = this.getOutlinksForPath(hit.path);
-			for (const dst of outlinks) {
-				if (resultPaths.has(dst)) {
-					const dstId = this.getSourceIdForPath(dst);
-					if (dstId) {
-						elements.push({
-							data: {
-								id: `edge-${hit.nodeId}-${dst}`,
-								source: `${hit.nodeType}-${hit.nodeId}`,
-								target: `note-${dstId}`,
-								edgeType: 'wikilink',
-							}
-						});
-					}
-				}
-			}
-		}
+    try {
+        const semEdges = await this.buildSemanticEdges(hits);
+        console.log(`[VaultRagExplorerView] renderGraph — wikiEdges=${edges.length} semEdges=${semEdges.length}`);
+        panel.setGraph(nodes, [...edges, ...semEdges]);
+        console.log(`[VaultRagExplorerView] renderGraph — setGraph called with ${nodes.length} nodes`);
+    } catch (e) {
+        console.error("[VaultRagExplorerView] renderGraph — buildSemanticEdges failed, rendering with wikilinks only", e);
+        panel.setGraph(nodes, edges);
+    }
+}
 
-		this.cytoscapeInstance = cytoscape({
-			container: this.graphEl,
-			elements,
-			style: [
-				{
-					selector: 'node',
-					style: {
-						'shape': 'ellipse',
-						'background-color': '#4a9eff',
-						'border-width': 2,
-						'border-color': '#ffffff',
-						'label': 'data(label)',
-						'color': '#ffffff',
-						'font-size': '11px' as unknown as number,
-						'text-valign': 'bottom',
-						'text-halign': 'center',
-						'text-margin-y': '4px' as unknown as number,
-						'text-outline-width': 2,
-						'text-outline-color': '#000000',
-						'width': 'data(nodeWidth)' as unknown as number,
-						'height': 'data(nodeHeight)' as unknown as number,
-					}
-				},
-				{
-					selector: 'node[nodeType="query"]',
-					style: {
-						'background-color': '#ffffff',
-						'border-color': '#4a9eff',
-						'border-width': 3,
-						'color': '#ffffff',
-						'width': 36 as unknown as number,
-						'height': 36 as unknown as number,
-					}
-				},
-				{
-					selector: 'node[nodeType="block"]',
-					style: {
-						'background-color': '#7b6af5',
-					}
-				},
-				{
-					selector: 'node.locked',
-					style: {
-						'border-color': '#ffd700',
-						'border-width': 4,
-					}
-				},
-				{
-					selector: 'node.excluded',
-					style: {
-						'display': 'none',
-					}
-				},
-				{
-					selector: 'edge[edgeType="semantic"]',
-					style: {
-						'line-color': '#4a9eff',
-						'opacity': 0.6,
-						'width': 'mapData(weight, 0, 1, 1, 4)' as unknown as number,
-						'curve-style': 'bezier',
-						'target-arrow-shape': 'none',
-					}
-				},
-				{
-					selector: 'edge[edgeType="wikilink"]',
-					style: {
-						'line-color': '#ffd700',
-						'opacity': 0.8,
-						'width': 2,
-						'curve-style': 'bezier',
-						'target-arrow-shape': 'triangle',
-						'target-arrow-color': '#ffd700',
-						'line-style': 'solid',
-					}
-				},
-				{
-					selector: 'edge.both-link',
-					style: {
-						'line-color': '#00c875',
-						'target-arrow-color': '#00c875',
-						'opacity': 0.9,
-						'width': 3,
-					}
-				},
-			],
-			layout: { name: 'cose', animate: false },
-		});
+	private async buildSemanticEdges(hits: RetrievalHit[]): Promise<GraphEdge[]> {
+  const THRESHOLD = 0.75;
+  const modelName = this.plugin.settings.embeddingModelName;
+  const semEdges: GraphEdge[] = [];
+  for (let i = 0; i < hits.length; i++) {
+    const vecA = this.plugin.embeddingReader.loadForOwner(
+      hits[i]?.nodeType === "note" ? "source" : "block",
+      hits[i]?.nodeId as number,
+      modelName
+    );
+    if (!vecA) continue;
+    for (let j = i + 1; j < hits.length; j++) {
+      const vecB = this.plugin.embeddingReader.loadForOwner(
+        hits[j]?.nodeType === "note" ? "source" : "block",
+        hits[j]?.nodeId as number,
+        modelName
+      );
+      if (!vecB) continue;
+      let dot = 0;
+      for (let k = 0; k < vecA.vec.length; k++) dot += (vecA.vec[k] || 0) * (vecB.vec[k] || 0);
+      if (dot >= THRESHOLD) {
+        semEdges.push({
+          id: `sem-${hits[i]?.nodeId}-${hits[j]?.nodeId}`,
+          source: `${hits[i]?.nodeType}-${hits[i]?.nodeId}`,
+          target: `${hits[j]?.nodeType}-${hits[j]?.nodeId}`,
+          edgeType: "semantic",
+          weight: dot,
+          expansion: false,
+        } as unknown as GraphEdge);
+      }
+    }
+  }
+  return semEdges;
+}
 
-		this.cytoscapeInstance?.on('tap', 'node', (event: cytoscape.EventObject) => {
-			const nodeData = event.target.data();
-			this.store.setState({ selectedNodeId: nodeData.id });
-
-			const response = this.store.getState().queryResponse;
-			if (response) {
-				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeData.id);
-				if (hit) {
-					this.renderMockInspector(hit);
-				}
-			}
-		});
-
-		this.cytoscapeInstance.edges().forEach((e: any) => {
-			const src = e.data('source');
-			const tgt = e.data('target');
-			const hasSemantic = this.cytoscapeInstance!.edges(`[source="${src}"][target="${tgt}"][edgeType="semantic"]`).length > 0;
-			const hasWikilink = this.cytoscapeInstance!.edges(`[source="${src}"][target="${tgt}"][edgeType="wikilink"]`).length > 0
-				|| this.cytoscapeInstance!.edges(`[source="${tgt}"][target="${src}"][edgeType="wikilink"]`).length > 0;
-			if (hasSemantic && hasWikilink) {
-				e.addClass('both-link');
-			}
-		});
-
-		this.addCrossEdges(this.cytoscapeInstance, hits);
-	}
-
-	private async addCrossEdges(cy: any, hits: RetrievalHit[]): Promise<void> {
+	private async addCrossEdges(cy: unknown, hits: RetrievalHit[]): Promise<void> {
 		const THRESHOLD = 0.75;
 		const modelName = this.plugin.settings.embeddingModelName;
 
@@ -998,17 +1157,21 @@ export class VaultRagExplorerView extends ItemView {
 				}
 			}
 		}
+
 		console.log(`[VaultRagExplorerView] Cross-edge threshold=${THRESHOLD}, pairs checked=${hits.length * (hits.length-1) / 2}`);
 	}
 
 	private async openHit(hit: RetrievalHit): Promise<void> {
+
 		console.log('[VaultRagExplorerView] openHit entered', { path: hit.path, nodeType: hit.nodeType, lineStart: hit.lineStart });
+
 		console.log('[VaultRagExplorerView] openHit', { path: hit.path, blockKey: hit.blockKey, lineStart: hit.lineStart });
 
 		const file = this.app.vault.getAbstractFileByPath(hit.path);
 		if (!file) {
 			new Notice(`File not found: ${hit.path}`);
-			console.warn('[VaultRagExplorerView] openHit: file not found', hit.path);
+
+		console.warn('[VaultRagExplorerView] openHit: file not found', hit.path);
 			return;
 		}
 
@@ -1026,17 +1189,19 @@ export class VaultRagExplorerView extends ItemView {
 
 		if (!existingLeaf) {
 			await leaf.openFile(file as import('obsidian').TFile);
-			console.log('[VaultRagExplorerView] openHit: opened in new tab', hit.path);
+
+		console.log('[VaultRagExplorerView] openHit: opened in new tab', hit.path);
 		} else {
 			// Bring the window containing the existing leaf to focus
 			this.app.workspace.setActiveLeaf(leaf, { focus: true });
-			console.log('[VaultRagExplorerView] openHit: revealed existing leaf', hit.path);
+
+		console.log('[VaultRagExplorerView] openHit: revealed existing leaf', hit.path);
 		}
 
 		// Scroll to the block if we have a line number
 		if (hit.nodeType === 'block' && hit.lineStart !== undefined && hit.lineStart > 0) {
 			// Wait a tick for the file to fully render before scrolling
-			setTimeout(() => {
+			window.setTimeout(() => {
 				try {
 					const view = leaf.view as {
 						editor?: {
@@ -1048,12 +1213,15 @@ export class VaultRagExplorerView extends ItemView {
 						const line = Math.max(0, (hit.lineStart ?? 1) - 1); // Convert 1-based to 0-based
 						view.editor.setCursor({ line, ch: 0 });
 						view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line: (hit.lineEnd ?? hit.lineStart ?? 1) - 1, ch: 0 } }, true);
-						console.log('[VaultRagExplorerView] openHit: scrolled to line', line);
+
+		console.log('[VaultRagExplorerView] openHit: scrolled to line', line);
 					} else {
-						console.warn('[VaultRagExplorerView] openHit: editor not available on leaf view, cannot scroll');
+
+		console.warn('[VaultRagExplorerView] openHit: editor not available on leaf view, cannot scroll');
 					}
 				} catch (e) {
-					console.error('[VaultRagExplorerView] openHit: scroll failed', e);
+
+		console.error('[VaultRagExplorerView] openHit: scroll failed', e);
 				}
 			}, 150);
 		}

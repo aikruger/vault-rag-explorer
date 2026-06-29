@@ -171,7 +171,7 @@ export class PreFilterService {
     console.log(`${LOG_PREFIX} Params:`, params);
 
     const stmt = rawDb.prepare(sql);
-    stmt.bind(params as any);
+    stmt.bind(params as import("sql.js").BindParams);
     const ids = new Set<number>();
     while (stmt.step()) {
       const row = stmt.getAsObject() as { id: number };
