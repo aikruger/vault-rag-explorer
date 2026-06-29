@@ -50,6 +50,18 @@ export class IndexBuilder {
   // ---------------------------------------------------------------------------
 
   /**
+   * Convenience wrapper for re-indexing a single .ajson file.
+   * Called by AjsonWatcherService on each debounced file change event.
+   */
+  async buildFromSingleFile(
+    watchFolder: string,
+    filePath: string
+  ): Promise<{ sources: number; blocks: number; embeddings: number }> {
+    console.log(`[IndexBuilder] buildFromSingleFile:`, filePath);
+    return this.buildFromPath(watchFolder, [filePath]);
+  }
+
+  /**
    * Write all parsed sources and blocks into the SQLite database.
    * Operates incrementally: records whose `hash` matches the stored value are
    * skipped (no re-write needed). Pass `forceRebuild=true` to bypass the hash
