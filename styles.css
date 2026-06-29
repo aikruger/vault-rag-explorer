@@ -210,3 +210,52 @@
 	color: var(--text-on-accent);
 	border-color: transparent;
 }
+
+/* Results toolbar */
+.vre-results-toolbar {
+	display: flex;
+	gap: 6px;
+	padding: 4px 8px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.vre-results-mode-btn {
+	padding: 2px 8px;
+	font-size: 11px;
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	border-radius: 4px;
+	cursor: pointer;
+}
+.vre-results-mode-btn:hover {
+	color: var(--text-normal);
+}
+.vre-results-mode-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+/* Grouped results styling */
+.vre-result-group {
+	margin-bottom: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+.vre-result-group-header {
+	background: var(--background-secondary);
+	padding: 6px 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-normal);
+	border-bottom: 1px solid var(--background-modifier-border);
+	word-break: break-all;
+}
+.vre-result-group-items {
+	padding: 4px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}

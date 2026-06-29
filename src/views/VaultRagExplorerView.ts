@@ -37,6 +37,8 @@ export class VaultRagExplorerView extends ItemView {
 	private preFilter: PreFilterOptions = JSON.parse(JSON.stringify(EMPTY_PREFILTER));
 	private excludedSourceIds: Set<number> = new Set();
 	private resultItemMap: Map<string, HTMLElement> = new Map();
+	private resultsViewMode: "flat" | "groupedByFile" = "groupedByFile";
+	private resultsToolbarEl: HTMLElement | null = null;
 	private excludedPaths: Set<string> = new Set();
 
 	constructor(leaf: WorkspaceLeaf, plugin: VaultRagExplorerPlugin) {
@@ -453,7 +455,42 @@ export class VaultRagExplorerView extends ItemView {
 
 	private renderResultsPanel(container: HTMLElement): void {
 		const panel = container.createDiv({ cls: "vre-panel vre-results-panel" });
-		panel.createEl("h3", { text: "Results" });
+
+		const headerRow = panel.createDiv({ cls: "vre-panel-header-row" });
+		headerRow.createEl("h3", { text: "Results" });
+
+		this.resultsToolbarEl = panel.createDiv({ cls: "vre-results-toolbar" });
+
+		const btnFlat = this.resultsToolbarEl.createEl("button", { text: "Flat", cls: "vre-results-mode-btn" });
+		const btnGrouped = this.resultsToolbarEl.createEl("button", { text: "Grouped by file", cls: "vre-results-mode-btn" });
+
+		const updateToolbarState = () => {
+			if (this.resultsViewMode === "flat") {
+				btnFlat.addClass("is-active");
+				btnGrouped.removeClass("is-active");
+			} else {
+				btnGrouped.addClass("is-active");
+				btnFlat.removeClass("is-active");
+			}
+		};
+
+		btnFlat.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Results mode changed to flat");
+			this.resultsViewMode = "flat";
+			updateToolbarState();
+			const hits = this.store.getState().queryResponse?.hits;
+			if (hits) this.renderResults(hits);
+		});
+
+		btnGrouped.addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Results mode changed to groupedByFile");
+			this.resultsViewMode = "groupedByFile";
+			updateToolbarState();
+			const hits = this.store.getState().queryResponse?.hits;
+			if (hits) this.renderResults(hits);
+		});
+
+		updateToolbarState();
 
 		this.resultsEl = panel.createDiv({ cls: "vre-results-list" });
 		this.resultsEl.createEl("div", {
@@ -579,7 +616,7 @@ export class VaultRagExplorerView extends ItemView {
 
 			this.store.setState({ queryResponse: response });
 
-			this.renderMockResults(response.hits);
+			this.renderResults(response.hits);
 			this.renderMockInspector(null);
 			await this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
 
@@ -646,19 +683,65 @@ export class VaultRagExplorerView extends ItemView {
 		refresh();
 	}
 
-	private renderMockResults(hits: RetrievalHit[]): void {
+
+	private renderResults(hits: RetrievalHit[]): void {
 		if (!this.resultsEl) return;
 		this.resultsEl.empty();
 		this.resultItemMap.clear();
 		this.renderExclusionList(this.resultsEl);
-		hits.forEach((hit) => {
-			this.renderHitItem(this.resultsEl!, hit, null);
-		});
+
+		if (this.resultsViewMode === "flat") {
+			this.renderFlatResults(hits);
+		} else {
+			this.renderGroupedResults(hits);
+		}
+
 		const selectedId = this.store.getState().selectedNodeId;
 		if (selectedId) {
 			this.highlightResultItem(selectedId);
-			console.log(`[VaultRagExplorerView] renderMockResults: restored highlight for ${selectedId}`);
+			console.log(`[VaultRagExplorerView] renderResults: restored highlight for ${selectedId}`);
 		}
+	}
+
+	private renderFlatResults(hits: RetrievalHit[]): void {
+		hits.forEach((hit) => {
+			this.renderHitItem(this.resultsEl!, hit, null);
+		});
+		console.log(`[VaultRagExplorerView] rendered ${hits.length} flat results`);
+	}
+
+	private renderGroupedResults(hits: RetrievalHit[]): void {
+		const groups = new Map<string, RetrievalHit[]>();
+		for (const hit of hits) {
+			if (!groups.has(hit.path)) groups.set(hit.path, []);
+			groups.get(hit.path)!.push(hit);
+		}
+
+		// Sort groups by highest scoring hit
+		const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+			const maxA = Math.max(...a[1].map(h => h.finalScore));
+			const maxB = Math.max(...b[1].map(h => h.finalScore));
+			return maxB - maxA;
+		});
+
+		for (const [path, groupHits] of sortedGroups) {
+			const groupEl = this.resultsEl!.createDiv({ cls: "vre-result-group" });
+			const headerEl = groupEl.createDiv({ cls: "vre-result-group-header" });
+			headerEl.createEl("span", { cls: "vre-result-group-path", text: path });
+
+			// note hit first, then blocks by score
+			const sortedHits = groupHits.sort((a, b) => {
+				if (a.nodeType === "note" && b.nodeType !== "note") return -1;
+				if (b.nodeType === "note" && a.nodeType !== "note") return 1;
+				return b.finalScore - a.finalScore;
+			});
+
+			const itemsContainer = groupEl.createDiv({ cls: "vre-result-group-items" });
+			sortedHits.forEach(hit => {
+				this.renderHitItem(itemsContainer, hit, null);
+			});
+		}
+		console.log(`[VaultRagExplorerView] rendered ${sortedGroups.length} groups`);
 	}
 
 	private renderHitItem(container: HTMLElement, hit: RetrievalHit, selectedId: string | null = null): void {
@@ -848,7 +931,7 @@ export class VaultRagExplorerView extends ItemView {
 			// Re-render results to update lock states
 			const response = this.store.getState().queryResponse;
 			if (response) {
-				this.renderMockResults(response.hits);
+				this.renderResults(response.hits);
 			}
 		});
 
@@ -875,7 +958,7 @@ export class VaultRagExplorerView extends ItemView {
 
 					const newResponse = { ...currentResponse, hits: mergedHits };
 					this.store.setState({ queryResponse: newResponse });
-					this.renderMockResults(newResponse.hits);
+					this.renderResults(newResponse.hits);
 					await this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
 					new Notice(`Expanded semantics with ${response.hits.length} hits`);
 				}
