@@ -309,6 +309,13 @@ export class VaultRagExplorerView extends ItemView {
 
 		const runBtn = controls.createEl("button", { text: "Run Query" });
 		runBtn.addEventListener("click", async () => {
+			if (this.plugin.isIndexing) {
+				console.log("[VaultRagExplorerView] query click blocked — indexing in progress");
+				new Notice("Vault RAG Explorer is updating the index. Please wait a moment.");
+				return;
+			}
+
+			console.log("[VaultRagExplorerView] query submit start");
 			runBtn.setAttr("disabled", "true");
 			runBtn.empty();
 			runBtn.createSpan({ cls: "loading-spinner" });
@@ -316,11 +323,13 @@ export class VaultRagExplorerView extends ItemView {
 			console.log("[VaultRagExplorerView] runQuery started — spinner shown");
 			try {
 				await this.runQuery();
+			} catch (error) {
+				console.error("[VaultRagExplorerView] Query failed", error);
 			} finally {
 				runBtn.removeAttribute("disabled");
 				runBtn.empty();
 				runBtn.setText("Run Query");
-				console.log("[VaultRagExplorerView] runQuery finished — spinner removed");
+				console.log("[VaultRagExplorerView] query submit end");
 			}
 		});
 
@@ -627,6 +636,7 @@ export class VaultRagExplorerView extends ItemView {
 
 		console.error("[VaultRagExplorerView] Query failed", error);
 			new Notice("Query failed. Check console for details.");
+			throw error;
 		}
 	}
 

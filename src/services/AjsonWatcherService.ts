@@ -5,16 +5,23 @@ const LOG = "[AjsonWatcherService]";
 const DEBOUNCE_MS = 2000; // wait 2s after last event before re-indexing
 
 import type { FSWatcher } from "fs";
+import type VaultRagExplorerPlugin from "../plugin";
 
 export class AjsonWatcherService {
   private watcher: FSWatcher | null = null;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private indexBuilder: IndexBuilder;
   private db: Database;
+  private plugin: VaultRagExplorerPlugin;
   private watchPath: string = "";
   private isRunning: boolean = false;
 
-  constructor(indexBuilder: IndexBuilder, db: Database) {
+  constructor(
+    plugin: VaultRagExplorerPlugin,
+    indexBuilder: IndexBuilder,
+    db: Database
+  ) {
+    this.plugin = plugin;
     this.indexBuilder = indexBuilder;
     this.db = db;
     console.log(`${LOG} constructed`);
@@ -103,6 +110,62 @@ export class AjsonWatcherService {
   // Private
   // ---------------------------------------------------------------------------
 
+  private scheduleDrain(): void {
+    if (this.plugin.reindexDrainScheduled) {
+      console.log(`${LOG} scheduleDrain skipped — already scheduled`, {
+        pendingCount: this.plugin.pendingAjsonReindex.size,
+      });
+      return;
+    }
+
+    this.plugin.reindexDrainScheduled = true;
+    console.log(`${LOG} scheduleDrain set`, {
+      pendingCount: this.plugin.pendingAjsonReindex.size,
+    });
+
+    window.setTimeout(() => {
+      this.plugin.reindexDrainScheduled = false;
+      void this.drainQueue();
+    }, 1500);
+  }
+
+  private async drainQueue(): Promise<void> {
+    console.log(`${LOG} drainQueue start`, {
+      pendingCount: this.plugin.pendingAjsonReindex.size,
+      activeQueryCount: this.plugin.activeQueryCount,
+      isIndexing: this.plugin.isIndexing,
+    });
+
+    if (!this.plugin.beginIndexing()) {
+      console.log(`${LOG} drainQueue deferred`, {
+        pendingCount: this.plugin.pendingAjsonReindex.size,
+        activeQueryCount: this.plugin.activeQueryCount,
+        isIndexing: this.plugin.isIndexing,
+      });
+      this.scheduleDrain();
+      return;
+    }
+
+    try {
+      const pending = Array.from(this.plugin.pendingAjsonReindex);
+      this.plugin.pendingAjsonReindex.clear();
+
+      for (const filePath of pending) {
+        console.log(`${LOG} drainQueue processing file`, { filePath });
+        await this.reindexFile(filePath);
+      }
+    } finally {
+      this.plugin.endIndexing();
+
+      if (this.plugin.pendingAjsonReindex.size > 0) {
+        console.log(`${LOG} drainQueue rescheduling — more files arrived`, {
+          pendingCount: this.plugin.pendingAjsonReindex.size,
+        });
+        this.scheduleDrain();
+      }
+    }
+  }
+
   /**
    * Debounce re-index calls per file. Each new event for the same file
    * resets the timer, so we only fire after DEBOUNCE_MS of silence.
@@ -114,9 +177,14 @@ export class AjsonWatcherService {
       console.log(`${LOG} debounce reset for`, fullFilePath);
     }
 
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       this.debounceTimers.delete(fullFilePath);
-      await this.reindexFile(fullFilePath);
+      this.plugin.pendingAjsonReindex.add(fullFilePath);
+      console.log(`${LOG} debounced file enqueued`, {
+        fullFilePath,
+        pendingCount: this.plugin.pendingAjsonReindex.size,
+      });
+      this.scheduleDrain();
     }, DEBOUNCE_MS);
 
     this.debounceTimers.set(fullFilePath, timer);

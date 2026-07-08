@@ -45,6 +45,62 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public preFilterService!: PreFilterService;
 	public queryService!: import("./services/QueryService").QueryService;
 
+	public isIndexing = false;
+	public activeQueryCount = 0;
+	public pendingAjsonReindex = new Set<string>();
+	public reindexDrainScheduled = false;
+
+	beginQuery(): void {
+		console.log("[VaultRagExplorerPlugin] beginQuery", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+		});
+		this.activeQueryCount += 1;
+		console.log("[VaultRagExplorerPlugin] beginQuery complete", {
+			activeQueryCount: this.activeQueryCount,
+		});
+	}
+
+	endQuery(): void {
+		this.activeQueryCount = Math.max(0, this.activeQueryCount - 1);
+		console.log("[VaultRagExplorerPlugin] endQuery", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+		});
+	}
+
+	beginIndexing(): boolean {
+		if (this.isIndexing) {
+			console.log("[VaultRagExplorerPlugin] beginIndexing denied — already indexing", {
+				activeQueryCount: this.activeQueryCount,
+				isIndexing: this.isIndexing,
+			});
+			return false;
+		}
+		if (this.activeQueryCount > 0) {
+			console.log("[VaultRagExplorerPlugin] beginIndexing denied — query active", {
+				activeQueryCount: this.activeQueryCount,
+				isIndexing: this.isIndexing,
+			});
+			return false;
+		}
+		this.isIndexing = true;
+		console.log("[VaultRagExplorerPlugin] beginIndexing granted", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+		});
+		return true;
+	}
+
+	endIndexing(): void {
+		this.isIndexing = false;
+		console.log("[VaultRagExplorerPlugin] endIndexing", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+			pendingCount: this.pendingAjsonReindex.size,
+		});
+	}
+
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} onload start`);
 
@@ -211,7 +267,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
 		console.log(`${LOG_PREFIX} IndexBuilder instantiated`);
 
-		this.ajsonWatcher = new AjsonWatcherService(this.indexBuilder, this.db);
+		this.ajsonWatcher = new AjsonWatcherService(this, this.indexBuilder, this.db);
 		console.log(`${LOG_PREFIX} AjsonWatcherService instantiated`);
 
 		this.embeddingService = new SmartConnectionsBridge(this.app);
@@ -224,8 +280,14 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} PreFilterService initialised`);
 
 		const { QueryService } = require("./services/QueryService");
-		this.queryService = new QueryService(this.db, this.embeddingService, this.embeddingReader, this.preFilterService);
-		console.log(`${LOG_PREFIX} QueryService initialised`);
+		this.queryService = new QueryService(
+			this,
+			this.db,
+			this.embeddingService,
+			this.embeddingReader,
+			this.preFilterService
+		);
+		console.log(`${LOG_PREFIX} QueryService initialised with plugin coordination`);
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);

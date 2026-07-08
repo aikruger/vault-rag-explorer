@@ -3,11 +3,13 @@ import type { Database } from "../db/Database";
 import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
 import type { PreFilterService, PreFilterOptions } from "./PreFilterService";
+import type VaultRagExplorerPlugin from "../plugin";
 
 const LOG_PREFIX = "[QueryService]";
 
 export class QueryService {
   constructor(
+    private plugin: VaultRagExplorerPlugin,
     private db: Database,
     private embeddingService: SmartConnectionsBridge,
     private embeddingReader: EmbeddingReader,
@@ -18,12 +20,25 @@ export class QueryService {
   public lockedNodesService: unknown; // We can set this from the plugin if needed.
 
   async runQuery(request: QueryRequest): Promise<QueryResponse> {
-    const startTime = Date.now();
-    const topK = request.options.topK;
-    const modelName = request.options.embeddingModelName || "TaylorAI/bge-micro-v2";
-    const wikilinkBoostEnabled = request.options.wikilinkBoostEnabled;
+    this.plugin.beginQuery();
+    try {
+      const startTime = Date.now();
+      const topK = request.options.topK;
+      const modelName = request.options.embeddingModelName || "TaylorAI/bge-micro-v2";
+      const wikilinkBoostEnabled = request.options.wikilinkBoostEnabled;
 
-    console.log(`${LOG_PREFIX} runQuery start text="${request.queryText}" topK=${topK} model=${modelName}`);
+      console.log(`${LOG_PREFIX} runQuery start`, {
+        isIndexing: this.plugin.isIndexing,
+        activeQueryCount: this.plugin.activeQueryCount,
+        queryTextLength: request.queryText?.length ?? 0,
+      });
+
+      if (this.plugin.isIndexing) {
+        console.log(`${LOG_PREFIX} runQuery abort — indexing in progress`);
+        throw new Error("Index update in progress. Retry the query in a moment.");
+      }
+
+      // 1. Embed query
 
     // 1. Embed query
     const queryVec = await this.embeddingService.embed(request.queryText);
@@ -43,15 +58,25 @@ export class QueryService {
 
     const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled, request.options);
 
-    const elapsed = Date.now() - startTime;
-    console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
+      const elapsed = Date.now() - startTime;
+      console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
 
-    return {
-      queryText: request.queryText,
-      queryEmbeddingModel: modelName,
-      hits,
-      generatedAt: Date.now()
-    };
+      return {
+        queryText: request.queryText,
+        queryEmbeddingModel: modelName,
+        hits,
+        generatedAt: Date.now()
+      };
+    } catch (error) {
+      console.error(`${LOG_PREFIX} runQuery failed`, error);
+      throw error;
+    } finally {
+      console.log(`${LOG_PREFIX} runQuery finally`, {
+        isIndexing: this.plugin.isIndexing,
+        activeQueryCount: this.plugin.activeQueryCount,
+      });
+      this.plugin.endQuery();
+    }
   }
 
   async expandSemantic(
@@ -221,9 +246,6 @@ export class QueryService {
 
     // 5. Look up details from DB
     const rawDb = this.db.getDb();
-    const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = $id`);
-    const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path, line_start, line_end FROM blocks WHERE id = $id`);
-    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
 
     // Milestone 6 wikilink boost calculation
     const lockedPaths = new Set<string>();
@@ -243,116 +265,155 @@ export class QueryService {
         JOIN sources s ON s.id = w.src_source_id
         WHERE s.path = $path
       `);
-      for (const lp of lockedPaths) {
-        selectOutlinks.bind({ $path: lp });
-        while (selectOutlinks.step()) {
-           const r = selectOutlinks.getAsObject() as { dst_path: string };
-           boostedPaths.add(r.dst_path);
-        }
-        selectOutlinks.reset();
-      }
-      selectOutlinks.free();
-    }
 
-    // Add wikilink boost to score
-    const finalScoredEmbeddings = scoredEmbeddings.map(emb => {
-      let path = "";
-      if (emb.ownerType === "source") {
-         selectSource.bind({ $id: emb.ownerId });
-         if (selectSource.step()) {
-           const row = selectSource.getAsObject() as { path: string };
-           path = row.path;
-         }
-         selectSource.reset();
-      } else {
-         selectBlock.bind({ $id: emb.ownerId });
-         if (selectBlock.step()) {
-           const row = selectBlock.getAsObject() as { block_path: string };
-           path = row.block_path;
-         }
-         selectBlock.reset();
-
-         if (allowedSourceIds && emb.ownerType === 'block') {
-           selectSourceIdByPath.bind({ $path: path });
-           let parentId = -1;
-           if (selectSourceIdByPath.step()) {
-             parentId = (selectSourceIdByPath.getAsObject() as { id: number }).id;
-           }
-           selectSourceIdByPath.reset();
-           if (!allowedSourceIds.has(parentId)) {
-             return { ...emb, path, wikilinkBoost: 0, finalScore: -1 }; // mark for removal
-           }
-         }
-      }
-
-      const boost = boostedPaths.has(path) ? 0.05 : 0;
-      return { ...emb, path, wikilinkBoost: boost, finalScore: emb.score + boost };
-    });
-
-    // 4. Sort and slice
-    finalScoredEmbeddings.sort((a, b) => b.finalScore - a.finalScore);
-    const topEmbeddings = finalScoredEmbeddings.filter(e => e.finalScore >= 0).slice(0, topK);
-
-    const hits: RetrievalHit[] = [];
-
-
-
-    for (const emb of topEmbeddings) {
-      if (emb.ownerType === "source") {
-        selectSource.bind({ $id: emb.ownerId });
-        if (selectSource.step()) {
-          const row = selectSource.getAsObject() as { path: string; title: string };
-          hits.push({
-            nodeType: "note",
-            nodeId: emb.ownerId,
-            sourceId: emb.ownerId,
-            path: row.path,
-            title: row.title,
-            previewText: "",
-            semanticScore: emb.score,
-            wikilinkBoost: emb.wikilinkBoost,
-            finalScore: emb.finalScore,
-            reasons: ["High semantic similarity", ...(emb.wikilinkBoost > 0 ? ["Linked to locked context"] : [])]
-          });
-        }
-        selectSource.reset();
-      } else if (emb.ownerType === "block") {
-        selectBlock.bind({ $id: emb.ownerId });
-        if (selectBlock.step()) {
-          const row = selectBlock.getAsObject() as { block_key: string; block_label: string; text: string; block_path: string; line_start: number; line_end: number };
-
-          selectSourceIdByPath.bind({ $path: row.block_path });
-          let srcRow: { id: number } | undefined;
-          if (selectSourceIdByPath.step()) {
-            srcRow = selectSourceIdByPath.getAsObject() as { id: number };
+      try {
+        console.log("[QueryService] Prepared selectOutlinks statement");
+        for (const lp of lockedPaths) {
+          if (lp == null || lp === "") {
+            console.error("[QueryService] Invalid locked path before bind", { lp });
+            continue;
           }
-          selectSourceIdByPath.reset();
-
-          hits.push({
-            nodeType: "block",
-            nodeId: emb.ownerId,
-            sourceId: srcRow ? srcRow.id : -1,
-            path: row.block_path,
-            title: row.block_label,
-            blockKey: row.block_key,
-            lineStart: row.line_start,
-            lineEnd: row.line_end,
-            previewText: row.text,
-            semanticScore: emb.score,
-            wikilinkBoost: emb.wikilinkBoost,
-            finalScore: emb.finalScore,
-            reasons: ["High semantic similarity at block level", ...(emb.wikilinkBoost > 0 ? ["Parent note linked to locked context"] : [])]
-          });
-          console.log('[QueryService] block hit with line range', { blockKey: row.block_key, lineStart: row.line_start, lineEnd: row.line_end });
+          console.log("[QueryService] selectOutlinks binding", { lp });
+          selectOutlinks.bind({ $path: lp });
+          while (selectOutlinks.step()) {
+             const r = selectOutlinks.getAsObject() as { dst_path: string };
+             boostedPaths.add(r.dst_path);
+          }
+          selectOutlinks.reset();
+          console.log("[QueryService] selectOutlinks reset");
         }
-        selectBlock.reset();
+      } catch (error) {
+        console.error("[QueryService] selectOutlinks statement failed", error);
+        throw error;
+      } finally {
+        selectOutlinks.free();
+        console.log("[QueryService] selectOutlinks freed");
       }
     }
 
-    selectSource.free();
-    selectBlock.free();
-    selectSourceIdByPath.free();
+    const selectSource = rawDb.prepare(`SELECT path, title FROM sources WHERE id = $id`);
+    const selectBlock = rawDb.prepare(`SELECT block_key, block_label, text, block_path, line_start, line_end FROM blocks WHERE id = $id`);
+    const selectSourceIdByPath = rawDb.prepare(`SELECT id FROM sources WHERE path = $path`);
 
-    return hits;
+    let finalScoredEmbeddings: any[] = [];
+    try {
+      console.log("[QueryService] Prepared selectSource, selectBlock, selectSourceIdByPath statements");
+
+      // Add wikilink boost to score
+      for (const emb of scoredEmbeddings) {
+        let path = "";
+        if (emb.ownerType === "source") {
+           if (!Number.isFinite(emb.ownerId)) {
+             console.error("[QueryService] invalid ownerId before selectSource bind", { ownerId: emb.ownerId });
+             continue;
+           }
+           selectSource.bind({ $id: emb.ownerId });
+           if (selectSource.step()) {
+             const row = selectSource.getAsObject() as { path: string };
+             path = row.path;
+           }
+           selectSource.reset();
+        } else {
+           if (!Number.isFinite(emb.ownerId)) {
+             console.error("[QueryService] invalid ownerId before selectBlock bind", { ownerId: emb.ownerId });
+             continue;
+           }
+           selectBlock.bind({ $id: emb.ownerId });
+           if (selectBlock.step()) {
+             const row = selectBlock.getAsObject() as { block_path: string };
+             path = row.block_path;
+           }
+           selectBlock.reset();
+
+           if (allowedSourceIds && emb.ownerType === 'block') {
+             if (path == null || path === "") {
+               console.error("[QueryService] invalid path before selectSourceIdByPath bind", { path });
+             } else {
+               selectSourceIdByPath.bind({ $path: path });
+               let parentId = -1;
+               if (selectSourceIdByPath.step()) {
+                 parentId = (selectSourceIdByPath.getAsObject() as { id: number }).id;
+               }
+               selectSourceIdByPath.reset();
+               if (!allowedSourceIds.has(parentId)) {
+                 finalScoredEmbeddings.push({ ...emb, path, wikilinkBoost: 0, finalScore: -1 }); // mark for removal
+                 continue;
+               }
+             }
+           }
+        }
+
+        const boost = boostedPaths.has(path) ? 0.05 : 0;
+        finalScoredEmbeddings.push({ ...emb, path, wikilinkBoost: boost, finalScore: emb.score + boost });
+      }
+
+      // 4. Sort and slice
+      finalScoredEmbeddings.sort((a, b) => b.finalScore - a.finalScore);
+      const topEmbeddings = finalScoredEmbeddings.filter(e => e.finalScore >= 0).slice(0, topK);
+
+      const hits: RetrievalHit[] = [];
+
+      for (const emb of topEmbeddings) {
+        if (emb.ownerType === "source") {
+          selectSource.bind({ $id: emb.ownerId });
+          if (selectSource.step()) {
+            const row = selectSource.getAsObject() as { path: string; title: string };
+            hits.push({
+              nodeType: "note",
+              nodeId: emb.ownerId,
+              sourceId: emb.ownerId,
+              path: row.path,
+              title: row.title,
+              previewText: "",
+              semanticScore: emb.score,
+              wikilinkBoost: emb.wikilinkBoost,
+              finalScore: emb.finalScore,
+              reasons: ["High semantic similarity", ...(emb.wikilinkBoost > 0 ? ["Linked to locked context"] : [])]
+            });
+          }
+          selectSource.reset();
+        } else if (emb.ownerType === "block") {
+          selectBlock.bind({ $id: emb.ownerId });
+          if (selectBlock.step()) {
+            const row = selectBlock.getAsObject() as { block_key: string; block_label: string; text: string; block_path: string; line_start: number; line_end: number };
+
+            selectSourceIdByPath.bind({ $path: row.block_path });
+            let srcRow: { id: number } | undefined;
+            if (selectSourceIdByPath.step()) {
+              srcRow = selectSourceIdByPath.getAsObject() as { id: number };
+            }
+            selectSourceIdByPath.reset();
+
+            hits.push({
+              nodeType: "block",
+              nodeId: emb.ownerId,
+              sourceId: srcRow ? srcRow.id : -1,
+              path: row.block_path,
+              title: row.block_label,
+              blockKey: row.block_key,
+              lineStart: row.line_start,
+              lineEnd: row.line_end,
+              previewText: row.text,
+              semanticScore: emb.score,
+              wikilinkBoost: emb.wikilinkBoost,
+              finalScore: emb.finalScore,
+              reasons: ["High semantic similarity at block level", ...(emb.wikilinkBoost > 0 ? ["Parent note linked to locked context"] : [])]
+            });
+            console.log('[QueryService] block hit with line range', { blockKey: row.block_key, lineStart: row.line_start, lineEnd: row.line_end });
+          }
+          selectBlock.reset();
+        }
+      }
+
+      return hits;
+    } catch (error) {
+      console.error("[QueryService] error processing embeddings", error);
+      throw error;
+    } finally {
+      selectSource.free();
+      selectBlock.free();
+      selectSourceIdByPath.free();
+      console.log("[QueryService] selectSource, selectBlock, selectSourceIdByPath freed");
+    }
   }
 }

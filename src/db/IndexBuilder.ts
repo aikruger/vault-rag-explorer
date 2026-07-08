@@ -57,7 +57,11 @@ export class IndexBuilder {
     watchFolder: string,
     filePath: string
   ): Promise<{ sources: number; blocks: number; embeddings: number }> {
-    console.log(`[IndexBuilder] buildFromSingleFile:`, filePath);
+    console.log(`[IndexBuilder] buildFromSingleFile start`, {
+      filePath,
+      watchFolder,
+      timestamp: Date.now(),
+    });
     return this.buildFromPath(watchFolder, [filePath]);
   }
 
@@ -204,10 +208,10 @@ export class IndexBuilder {
 
     for (let batchStart = 0; batchStart < sources.length; batchStart += BATCH_SIZE) {
       const batch = sources.slice(batchStart, batchStart + BATCH_SIZE);
-      console.log(
-        `${LOG_PREFIX} inserting sources batch ${batchStart + 1}-${batchStart + batch.length} of ${sources.length}`,
-        { batchSize: batch.length }
-      );
+      console.log(`${LOG_PREFIX} BEGIN source batch transaction`, {
+        batchStart,
+        batchSize: batch.length
+      });
 
       rawDb.exec("BEGIN TRANSACTION;");
       for (const source of batch) {
@@ -271,6 +275,10 @@ export class IndexBuilder {
         }
       }
       rawDb.exec("COMMIT;");
+      console.log(`${LOG_PREFIX} COMMIT source batch transaction`, {
+        batchStart,
+        batchSize: batch.length
+      });
     }
 
     selectHash.free();
@@ -326,10 +334,10 @@ export class IndexBuilder {
 
     for (let batchStart = 0; batchStart < blocks.length; batchStart += BATCH_SIZE) {
       const batch = blocks.slice(batchStart, batchStart + BATCH_SIZE);
-      console.log(
-        `${LOG_PREFIX} inserting blocks batch ${batchStart + 1}-${batchStart + batch.length} of ${blocks.length}`,
-        { batchSize: batch.length }
-      );
+      console.log(`${LOG_PREFIX} BEGIN block batch transaction`, {
+        batchStart,
+        batchSize: batch.length
+      });
 
       rawDb.exec("BEGIN TRANSACTION;");
       for (const block of batch) {
@@ -422,6 +430,10 @@ export class IndexBuilder {
         }
       }
       rawDb.exec("COMMIT;");
+      console.log(`${LOG_PREFIX} COMMIT block batch transaction`, {
+        batchStart,
+        batchSize: batch.length
+      });
     }
 
     selectBlockHash.free();
