@@ -107,6 +107,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		await this.loadSettings();
 		await this.initialiseServices();
 
+		console.log("[VaultRagExplorerPlugin] method check", {
+			hasBeginQuery: typeof this.beginQuery,
+			hasEndQuery: typeof this.endQuery,
+			hasBeginIndexing: typeof this.beginIndexing,
+			hasEndIndexing: typeof this.endIndexing,
+		});
+
 		registerCommands(this);
 
 		this.addRibbonIcon("network", "Open Vault RAG Explorer", async () => {
@@ -279,6 +286,14 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.preFilterService = new PreFilterService(this.db);
 		console.log(`${LOG_PREFIX} PreFilterService initialised`);
 
+		console.log("[VaultRagExplorerPlugin] before QueryService construction", {
+			pluginConstructor: this.constructor.name,
+			hasBeginQuery: typeof this.beginQuery,
+			hasEndQuery: typeof this.endQuery,
+			hasBeginIndexing: typeof this.beginIndexing,
+			hasEndIndexing: typeof this.endIndexing,
+		});
+
 		const { QueryService } = require("./services/QueryService");
 		this.queryService = new QueryService(
 			this,
@@ -287,7 +302,10 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			this.embeddingReader,
 			this.preFilterService
 		);
-		console.log(`${LOG_PREFIX} QueryService initialised with plugin coordination`);
+		console.log(`${LOG_PREFIX} QueryService initialised with plugin coordination`, {
+			queryServicePluginType: this.queryService ? "constructed" : "missing",
+			pluginHasBeginQuery: typeof this.beginQuery,
+		});
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);

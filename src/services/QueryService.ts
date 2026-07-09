@@ -14,12 +14,26 @@ export class QueryService {
     private embeddingService: SmartConnectionsBridge,
     private embeddingReader: EmbeddingReader,
     private preFilterService?: PreFilterService
-  ) {}
+  ) {
+    console.log("[QueryService] constructed", {
+      pluginType: this.plugin?.constructor?.name,
+      hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
+    });
+  }
 
   // Optional dependency, to avoid circular dependencies or massive refactors late in the process.
   public lockedNodesService: unknown; // We can set this from the plugin if needed.
 
   async runQuery(request: QueryRequest): Promise<QueryResponse> {
+    if (!this.plugin || typeof this.plugin.beginQuery !== "function") {
+      console.error("[QueryService] invalid plugin instance", {
+        pluginConstructor: this.plugin?.constructor?.name,
+        pluginKeys: this.plugin ? Object.keys(this.plugin).slice(0, 30) : null,
+        hasBeginQuery: typeof this.plugin?.beginQuery,
+      });
+      throw new Error("QueryService misconfigured: plugin.beginQuery is unavailable");
+    }
+
     this.plugin.beginQuery();
     try {
       const startTime = Date.now();

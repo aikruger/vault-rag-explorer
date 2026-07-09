@@ -309,6 +309,12 @@ export class VaultRagExplorerView extends ItemView {
 
 		const runBtn = controls.createEl("button", { text: "Run Query" });
 		runBtn.addEventListener("click", async () => {
+				console.log("[VaultRagExplorerView] pre-runQuery plugin method check", {
+					hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
+					hasEndQuery: typeof (this.plugin as { endQuery?: unknown })?.endQuery,
+					pluginConstructor: this.plugin?.constructor?.name,
+				});
+
 			if (this.plugin.isIndexing) {
 				console.log("[VaultRagExplorerView] query click blocked — indexing in progress");
 				new Notice("Vault RAG Explorer is updating the index. Please wait a moment.");
