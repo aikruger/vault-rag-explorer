@@ -260,9 +260,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		console.log(`${LOG_PREFIX} initialiseServices`, { smartFolderPath });
 
-		console.log('[VaultRagExplorerPlugin] plugin manifest id', this.manifest.id);
-		console.log('[VaultRagExplorerPlugin] resolved plugin dir', this.manifest.dir);
-		console.log('[VaultRagExplorerPlugin] resolved smart_index.db path', this.settings.indexDbPath);
+		console.log("[VaultRagExplorerPlugin] manifest / path check", {
+			manifestId: this.manifest.id,
+			manifestDir: this.manifest.dir,
+			indexDbPath: this.settings.indexDbPath,
+		});
 		console.log('[VaultRagExplorerPlugin] resolved smart folder path', smartFolderPath);
 
 		// Initialize Database
@@ -292,6 +294,10 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			hasEndQuery: typeof this.endQuery,
 			hasBeginIndexing: typeof this.beginIndexing,
 			hasEndIndexing: typeof this.endIndexing,
+			dbConstructor: this.db?.constructor?.name,
+			embeddingServiceConstructor: this.embeddingService?.constructor?.name,
+			embeddingReaderConstructor: this.embeddingReader?.constructor?.name,
+			preFilterServiceConstructor: this.preFilterService?.constructor?.name,
 		});
 
 		const { QueryService } = require("./services/QueryService");
@@ -303,9 +309,22 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			this.preFilterService
 		);
 		console.log(`${LOG_PREFIX} QueryService initialised with plugin coordination`, {
-			queryServicePluginType: this.queryService ? "constructed" : "missing",
+			queryServiceExists: !!this.queryService,
 			pluginHasBeginQuery: typeof this.beginQuery,
 		});
+
+		const qsAny = this.queryService as unknown as { plugin?: unknown };
+		console.log("[VaultRagExplorerPlugin] QueryService plugin wiring check", {
+			internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+			internalPluginHasBeginQuery: typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery,
+		});
+
+		if (typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery !== "function") {
+			console.error("[VaultRagExplorerPlugin] QueryService miswired after construction", {
+				internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+			});
+			throw new Error("QueryService wiring error: plugin instance was not injected correctly");
+		}
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);

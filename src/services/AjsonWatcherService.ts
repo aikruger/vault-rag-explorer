@@ -24,7 +24,10 @@ export class AjsonWatcherService {
     this.plugin = plugin;
     this.indexBuilder = indexBuilder;
     this.db = db;
-    console.log(`${LOG} constructed`);
+    console.log(`${LOG} constructed`, {
+      pluginConstructor: this.plugin?.constructor?.name,
+      hasBeginIndexing: typeof (this.plugin as { beginIndexing?: unknown })?.beginIndexing,
+    });
   }
 
   /**

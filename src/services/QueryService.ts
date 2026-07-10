@@ -15,9 +15,11 @@ export class QueryService {
     private embeddingReader: EmbeddingReader,
     private preFilterService?: PreFilterService
   ) {
-    console.log("[QueryService] constructed", {
-      pluginType: this.plugin?.constructor?.name,
+    console.log("[QueryService] constructor received plugin", {
+      pluginConstructor: this.plugin?.constructor?.name,
+      pluginKeys: this.plugin ? Object.keys(this.plugin).slice(0, 20) : null,
       hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
+      hasEndQuery: typeof (this.plugin as { endQuery?: unknown })?.endQuery,
     });
   }
 
@@ -28,8 +30,9 @@ export class QueryService {
     if (!this.plugin || typeof this.plugin.beginQuery !== "function") {
       console.error("[QueryService] invalid plugin instance", {
         pluginConstructor: this.plugin?.constructor?.name,
-        pluginKeys: this.plugin ? Object.keys(this.plugin).slice(0, 30) : null,
-        hasBeginQuery: typeof this.plugin?.beginQuery,
+        pluginKeys: this.plugin ? Object.keys(this.plugin).slice(0, 20) : null,
+        hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
+        hasEndQuery: typeof (this.plugin as { endQuery?: unknown })?.endQuery,
       });
       throw new Error("QueryService misconfigured: plugin.beginQuery is unavailable");
     }
