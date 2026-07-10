@@ -45,6 +45,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public preFilterService!: PreFilterService;
 	public queryService!: import("./services/QueryService").QueryService;
 
+	public readonly debugInstanceId = `vre-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 	public isIndexing = false;
 	public activeQueryCount = 0;
 	public pendingAjsonReindex = new Set<string>();
@@ -103,6 +104,10 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} onload start`);
+
+		console.log("[VaultRagExplorerPlugin] debug instance", {
+			debugInstanceId: this.debugInstanceId,
+		});
 
 		await this.loadSettings();
 		await this.initialiseServices();
@@ -316,14 +321,17 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log("[VaultRagExplorerPlugin] QueryService plugin wiring check", {
 			internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
 			internalPluginHasBeginQuery: typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery,
-			internalPluginHasEndQuery: typeof (qsAny.plugin as { endQuery?: unknown } | undefined)?.endQuery,
+			internalPluginDebugId: (qsAny.plugin as { debugInstanceId?: string } | undefined)?.debugInstanceId,
+			expectedDebugId: this.debugInstanceId,
 		});
 
-		if (typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery !== "function") {
+		if ((qsAny.plugin as { debugInstanceId?: string } | undefined)?.debugInstanceId !== this.debugInstanceId) {
 			console.error("[VaultRagExplorerPlugin] QueryService miswired after construction", {
 				internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+				internalPluginDebugId: (qsAny.plugin as { debugInstanceId?: string } | undefined)?.debugInstanceId,
+				expectedDebugId: this.debugInstanceId,
 			});
-			throw new Error("QueryService wiring error: plugin instance was not injected correctly");
+			throw new Error("QueryService wiring error: plugin instance mismatch");
 		}
 
 		this.lockedNodesService = new LockedNodesService();

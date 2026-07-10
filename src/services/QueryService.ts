@@ -20,6 +20,7 @@ export class QueryService {
       pluginKeys: this.plugin ? Object.keys(this.plugin).slice(0, 20) : null,
       hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
       hasEndQuery: typeof (this.plugin as { endQuery?: unknown })?.endQuery,
+      debugInstanceId: (this.plugin as { debugInstanceId?: string })?.debugInstanceId,
     });
   }
 
