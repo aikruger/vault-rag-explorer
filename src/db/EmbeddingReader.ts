@@ -23,6 +23,11 @@ export class EmbeddingReader {
    * Returns an array of StoredEmbedding, one per row in the embeddings table.
    */
   loadAll(modelName: string): StoredEmbedding[] {
+    if (modelName == null || modelName === "") {
+      console.error(`${LOG_PREFIX} invalid modelName before bind`, { modelName });
+      throw new Error("Invalid modelName before SQL bind");
+    }
+
     const rawDb = this.db.getDb();
     console.log('[EmbeddingReader] loadEmbeddings start', { modelName });
 
@@ -46,41 +51,57 @@ export class EmbeddingReader {
       WHERE model_name = ?
     `);
 
-    stmt.bind([modelName]);
-
     const results: StoredEmbedding[] = [];
 
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as {
-        owner_type: 'source' | 'block';
-        owner_id: number;
-        model_name: string;
-        dim: number;
-        norm: number;
-        is_normalized: number;
-        embedding: Uint8Array;
-      };
+    try {
+      console.log(`${LOG_PREFIX} statement prepared for loadAll`, { modelName });
+      stmt.bind([modelName]);
+      console.log(`${LOG_PREFIX} statement bound for loadAll`, { modelName });
 
-      const buf = Buffer.from(row.embedding as string | Uint8Array);
-			console.log(`${LOG_PREFIX} loadAll: decoded embedding row ownerId=${row.owner_id}`);
-      const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as {
+          owner_type: 'source' | 'block';
+          owner_id: number;
+          model_name: string;
+          dim: number;
+          norm: number;
+          is_normalized: number;
+          embedding: Uint8Array;
+        };
 
-      if (vec.length !== row.dim) {
-        console.warn(`${LOG_PREFIX} Skipping embedding id=${row.owner_id} — dim mismatch stored=${row.dim} actual=${vec.length}`);
-        continue;
+        if (row.embedding == null) {
+          console.error(`${LOG_PREFIX} missing embedding blob`, { ownerId: row.owner_id });
+          continue;
+        }
+
+        const buf = Buffer.from(row.embedding as string | Uint8Array);
+			// Removed per-row logging to reduce noise, only logging errors
+        const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+
+        if (vec.length !== row.dim) {
+          console.warn(`${LOG_PREFIX} Skipping embedding id=${row.owner_id} — dim mismatch stored=${row.dim} actual=${vec.length}`);
+          continue;
+        }
+
+        results.push({
+          ownerType: row.owner_type,
+          ownerId: row.owner_id,
+          modelName: row.model_name,
+          dim: row.dim,
+          norm: row.norm,
+          isNormalized: Boolean(row.is_normalized),
+          vec
+        });
       }
-
-      results.push({
-        ownerType: row.owner_type,
-        ownerId: row.owner_id,
-        modelName: row.model_name,
-        dim: row.dim,
-        norm: row.norm,
-        isNormalized: Boolean(row.is_normalized),
-        vec
-      });
+      stmt.reset();
+      console.log(`${LOG_PREFIX} statement reset for loadAll`);
+    } catch (error) {
+      console.error(`${LOG_PREFIX} statement failed in loadAll`, { modelName, error });
+      throw error;
+    } finally {
+      stmt.free();
+      console.log(`${LOG_PREFIX} statement freed for loadAll`);
     }
-    stmt.free();
 
     console.log('[EmbeddingReader] query results', {
       requestedModel: modelName,
@@ -102,6 +123,15 @@ export class EmbeddingReader {
    * Load embeddings for a specific owner (source or block).
    */
   loadForOwner(ownerType: 'source' | 'block', ownerId: number, modelName: string): StoredEmbedding | null {
+    if (modelName == null || modelName === "") {
+      console.error(`${LOG_PREFIX} invalid modelName before bind`, { modelName });
+      throw new Error("Invalid modelName before SQL bind");
+    }
+    if (!Number.isFinite(ownerId) || ownerId <= 0) {
+      console.error(`${LOG_PREFIX} invalid ownerId before bind`, { ownerId });
+      throw new Error("Invalid ownerId before SQL bind");
+    }
+
     const rawDb = this.db.getDb();
     const stmt = rawDb.prepare(`
       SELECT owner_type, owner_id, model_name, dim, norm, is_normalized, embedding
@@ -109,68 +139,104 @@ export class EmbeddingReader {
       WHERE owner_type = ? AND owner_id = ? AND model_name = ?
     `);
 
-    stmt.bind([ownerType, ownerId, modelName]);
-
     let resultRow: StoredEmbedding | null = null;
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as {
-        owner_type: 'source' | 'block';
-        owner_id: number;
-        model_name: string;
-        dim: number;
-        norm: number;
-        is_normalized: number;
-        embedding: Uint8Array;
-      };
 
-      const buf = Buffer.from(row.embedding as string | Uint8Array);
-      const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+    try {
+      console.log(`${LOG_PREFIX} statement prepared for loadForOwner`, { ownerType, ownerId, modelName });
+      stmt.bind([ownerType, ownerId, modelName]);
+      console.log(`${LOG_PREFIX} statement bound for loadForOwner`, { ownerType, ownerId, modelName });
 
-      if (vec.length === row.dim) {
-        resultRow = {
-          ownerType: row.owner_type,
-          ownerId: row.owner_id,
-          modelName: row.model_name,
-          dim: row.dim,
-          norm: row.norm,
-          isNormalized: Boolean(row.is_normalized),
-          vec
+      if (stmt.step()) {
+        const row = stmt.getAsObject() as {
+          owner_type: 'source' | 'block';
+          owner_id: number;
+          model_name: string;
+          dim: number;
+          norm: number;
+          is_normalized: number;
+          embedding: Uint8Array;
         };
-      } else {
-        console.warn(`${LOG_PREFIX} Skipping embedding id=${row.owner_id} — dim mismatch stored=${row.dim} actual=${vec.length}`);
+
+        if (row.embedding != null) {
+          const buf = Buffer.from(row.embedding as string | Uint8Array);
+          const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+
+          if (vec.length === row.dim) {
+            resultRow = {
+              ownerType: row.owner_type,
+              ownerId: row.owner_id,
+              modelName: row.model_name,
+              dim: row.dim,
+              norm: row.norm,
+              isNormalized: Boolean(row.is_normalized),
+              vec
+            };
+          } else {
+            console.warn(`${LOG_PREFIX} Skipping embedding id=${row.owner_id} — dim mismatch stored=${row.dim} actual=${vec.length}`);
+          }
+        }
       }
+      stmt.reset();
+      console.log(`${LOG_PREFIX} statement reset for loadForOwner`);
+    } catch (error) {
+      console.error(`${LOG_PREFIX} statement failed in loadForOwner`, { ownerType, ownerId, modelName, error });
+      throw error;
+    } finally {
+      stmt.free();
+      console.log(`${LOG_PREFIX} statement freed for loadForOwner`);
     }
-    stmt.free();
 
     return resultRow;
   }
 
   loadAllByDim(dim: number): StoredEmbedding[] {
+    if (!Number.isFinite(dim) || dim <= 0) {
+      console.error(`${LOG_PREFIX} invalid dim before bind`, { dim });
+      throw new Error("Invalid dim before SQL bind");
+    }
+
     const rawDb = this.db.getDb();
     console.log('[EmbeddingReader] loadAllByDim', { dim });
+
     const stmt = rawDb.prepare(`
       SELECT owner_type, owner_id, model_name, dim, norm, is_normalized, embedding
       FROM embeddings
       WHERE dim = ?
     `);
-    stmt.bind([dim]);
+
     const results: StoredEmbedding[] = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as Record<string, unknown>;
-      const buf = Buffer.from(row.embedding as string | Uint8Array);
-      const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-      if (vec.length !== row.dim) continue;
-      results.push({
-        ownerType: row.owner_type as "block" | "source",
-        ownerId: row.owner_id as number,
-        modelName: row.model_name as string,
-        dim: row.dim,
-        norm: row.norm as number,
-        isNormalized: Boolean(row.is_normalized),
-        vec,
-      });
+
+    try {
+      console.log(`${LOG_PREFIX} statement prepared for loadAllByDim`, { dim });
+      stmt.bind([dim]);
+      console.log(`${LOG_PREFIX} statement bound for loadAllByDim`, { dim });
+
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as Record<string, unknown>;
+        if (row.embedding == null) continue;
+        const buf = Buffer.from(row.embedding as string | Uint8Array);
+        const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+        if (vec.length !== row.dim) continue;
+        results.push({
+          ownerType: row.owner_type as "block" | "source",
+          ownerId: row.owner_id as number,
+          modelName: row.model_name as string,
+          dim: row.dim as number,
+          norm: row.norm as number,
+          isNormalized: Boolean(row.is_normalized),
+          vec,
+        });
+      }
+      stmt.reset();
+      console.log(`${LOG_PREFIX} statement reset for loadAllByDim`);
+    } catch (error) {
+      console.error(`${LOG_PREFIX} statement failed in loadAllByDim`, { dim, error });
+      throw error;
+    } finally {
+      stmt.free();
+      console.log(`${LOG_PREFIX} statement freed for loadAllByDim`);
     }
-    stmt.free();
+
     console.log('[EmbeddingReader] loadAllByDim results', { dim, count: results.length });
     return results;
   }

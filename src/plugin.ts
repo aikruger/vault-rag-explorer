@@ -18,6 +18,7 @@ import { Database } from "./db/Database";
 import { AjsonParser } from "./parsers/AjsonParser";
 import { IndexBuilder } from "./db/IndexBuilder";
 import { PreFilterService } from "./services/PreFilterService";
+import { AjsonWatcherService } from "./services/AjsonWatcherService";
 
 import { SmartConnectionsBridge } from "./services/SmartConnectionsBridge";
 import { EmbeddingReader } from "./db/EmbeddingReader";
@@ -34,6 +35,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	view: VaultRagExplorerView | null = null;
 	db!: Database;
 	public indexBuilder!: IndexBuilder;
+	public ajsonWatcher!: AjsonWatcherService;
 	public embeddingService!: SmartConnectionsBridge;
 	public embeddingReader!: EmbeddingReader;
 	public lockedNodesService!: LockedNodesService;
@@ -43,11 +45,79 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public preFilterService!: PreFilterService;
 	public queryService!: import("./services/QueryService").QueryService;
 
+	public readonly debugInstanceId = `vre-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	public isIndexing = false;
+	public activeQueryCount = 0;
+	public pendingAjsonReindex = new Set<string>();
+	public reindexDrainScheduled = false;
+
+	beginQuery(): void {
+		console.log("[VaultRagExplorerPlugin] beginQuery", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+		});
+		this.activeQueryCount += 1;
+		console.log("[VaultRagExplorerPlugin] beginQuery complete", {
+			activeQueryCount: this.activeQueryCount,
+		});
+	}
+
+	endQuery(): void {
+		this.activeQueryCount = Math.max(0, this.activeQueryCount - 1);
+		console.log("[VaultRagExplorerPlugin] endQuery", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+		});
+	}
+
+	beginIndexing(): boolean {
+		if (this.isIndexing) {
+			console.log("[VaultRagExplorerPlugin] beginIndexing denied — already indexing", {
+				activeQueryCount: this.activeQueryCount,
+				isIndexing: this.isIndexing,
+			});
+			return false;
+		}
+		if (this.activeQueryCount > 0) {
+			console.log("[VaultRagExplorerPlugin] beginIndexing denied — query active", {
+				activeQueryCount: this.activeQueryCount,
+				isIndexing: this.isIndexing,
+			});
+			return false;
+		}
+		this.isIndexing = true;
+		console.log("[VaultRagExplorerPlugin] beginIndexing granted", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+		});
+		return true;
+	}
+
+	endIndexing(): void {
+		this.isIndexing = false;
+		console.log("[VaultRagExplorerPlugin] endIndexing", {
+			activeQueryCount: this.activeQueryCount,
+			isIndexing: this.isIndexing,
+			pendingCount: this.pendingAjsonReindex.size,
+		});
+	}
+
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} onload start`);
 
+		console.log("[VaultRagExplorerPlugin] debug instance", {
+			debugInstanceId: this.debugInstanceId,
+		});
+
 		await this.loadSettings();
 		await this.initialiseServices();
+
+		console.log("[VaultRagExplorerPlugin] method check", {
+			hasBeginQuery: typeof this.beginQuery,
+			hasEndQuery: typeof this.endQuery,
+			hasBeginIndexing: typeof this.beginIndexing,
+			hasEndIndexing: typeof this.endIndexing,
+		});
 
 		registerCommands(this);
 
@@ -79,6 +149,15 @@ export default class VaultRagExplorerPlugin extends Plugin {
 					8000
 				);
 			}
+
+			// Start the automatic .ajson watcher if the smart folder is configured
+			const smartPath = this.getSmartFolderPath();
+			if (smartPath) {
+				console.log(`${LOG_PREFIX} starting AjsonWatcher on layout ready — path:`, smartPath);
+				this.ajsonWatcher.start(smartPath);
+			} else {
+				console.log(`${LOG_PREFIX} AjsonWatcher not started — smart folder path not configured`);
+			}
 		});
 
 		console.log(`${LOG_PREFIX} onload complete`);
@@ -89,6 +168,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
 
+
+		if (this.ajsonWatcher) {
+			this.ajsonWatcher.stop();
+			console.log(`${LOG_PREFIX} AjsonWatcher stopped on unload`);
+		}
 
 		this.view = null;
 		if (this.db) {
@@ -105,6 +189,18 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	async saveSettings(): Promise<void> {
 		console.log(`${LOG_PREFIX} saving settings`, this.settings);
 		await this.saveData(this.settings);
+
+		// Restart watcher in case the smart folder path was changed
+		const newSmartPath = this.getSmartFolderPath();
+		if (this.ajsonWatcher) {
+			if (newSmartPath) {
+				console.log(`${LOG_PREFIX} settings saved — restarting AjsonWatcher with new path:`, newSmartPath);
+				this.ajsonWatcher.start(newSmartPath);
+			} else {
+				console.log(`${LOG_PREFIX} settings saved — smart folder cleared, stopping AjsonWatcher`);
+				this.ajsonWatcher.stop();
+			}
+		}
 	}
 
 	getSmartFolderPath(): string {
@@ -169,9 +265,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		console.log(`${LOG_PREFIX} initialiseServices`, { smartFolderPath });
 
-		console.log('[VaultRagExplorerPlugin] plugin manifest id', this.manifest.id);
-		console.log('[VaultRagExplorerPlugin] resolved plugin dir', this.manifest.dir);
-		console.log('[VaultRagExplorerPlugin] resolved smart_index.db path', this.settings.indexDbPath);
+		console.log("[VaultRagExplorerPlugin] manifest / path check", {
+			manifestId: this.manifest.id,
+			manifestDir: this.manifest.dir,
+			indexDbPath: this.settings.indexDbPath,
+		});
 		console.log('[VaultRagExplorerPlugin] resolved smart folder path', smartFolderPath);
 
 		// Initialize Database
@@ -183,6 +281,9 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.indexBuilder = new IndexBuilder(this.db, this.settings.enableDebugLogging);
 		console.log(`${LOG_PREFIX} IndexBuilder instantiated`);
 
+		this.ajsonWatcher = new AjsonWatcherService(this, this.indexBuilder, this.db);
+		console.log(`${LOG_PREFIX} AjsonWatcherService instantiated`);
+
 		this.embeddingService = new SmartConnectionsBridge(this.app);
 		console.log(`${LOG_PREFIX} SmartConnectionsBridge ready — SC model=${this.embeddingService.getModelName()}`);
 
@@ -192,9 +293,46 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		this.preFilterService = new PreFilterService(this.db);
 		console.log(`${LOG_PREFIX} PreFilterService initialised`);
 
+		console.log("[VaultRagExplorerPlugin] before QueryService construction", {
+			pluginConstructor: this.constructor.name,
+			hasBeginQuery: typeof this.beginQuery,
+			hasEndQuery: typeof this.endQuery,
+			hasBeginIndexing: typeof this.beginIndexing,
+			hasEndIndexing: typeof this.endIndexing,
+			dbConstructor: this.db?.constructor?.name,
+			embeddingServiceConstructor: this.embeddingService?.constructor?.name,
+			embeddingReaderConstructor: this.embeddingReader?.constructor?.name,
+			preFilterServiceConstructor: this.preFilterService?.constructor?.name,
+		});
+
 		const { QueryService } = require("./services/QueryService");
-		this.queryService = new QueryService(this.db, this.embeddingService, this.embeddingReader, this.preFilterService);
-		console.log(`${LOG_PREFIX} QueryService initialised`);
+		this.queryService = new QueryService(
+			this,
+			this.db,
+			this.embeddingService,
+			this.embeddingReader,
+			this.preFilterService
+		);
+		console.log("[VaultRagExplorerPlugin] after QueryService construction", {
+			queryServiceExists: !!this.queryService,
+		});
+
+		const qsAny = this.queryService as unknown as { plugin?: unknown };
+		console.log("[VaultRagExplorerPlugin] QueryService plugin wiring check", {
+			internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+			internalPluginHasBeginQuery: typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery,
+			internalPluginDebugId: (qsAny.plugin as { debugInstanceId?: string } | undefined)?.debugInstanceId,
+			expectedDebugId: this.debugInstanceId,
+		});
+
+		if ((qsAny.plugin as { debugInstanceId?: string } | undefined)?.debugInstanceId !== this.debugInstanceId) {
+			console.error("[VaultRagExplorerPlugin] QueryService miswired after construction", {
+				internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+				internalPluginDebugId: (qsAny.plugin as { debugInstanceId?: string } | undefined)?.debugInstanceId,
+				expectedDebugId: this.debugInstanceId,
+			});
+			throw new Error("QueryService wiring error: plugin instance mismatch");
+		}
 
 		this.lockedNodesService = new LockedNodesService();
 		this.sessionService = new SessionService(this.app);

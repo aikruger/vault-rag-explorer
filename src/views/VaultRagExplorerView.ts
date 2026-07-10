@@ -45,10 +45,18 @@ export class VaultRagExplorerView extends ItemView {
 		super(leaf);
 		this.plugin = plugin;
 		this.store = new RagExplorerStore();
-		this.queryService = new QueryService(plugin.db, plugin.embeddingService, plugin.embeddingReader);
-		this.queryService.lockedNodesService = plugin.lockedNodesService;
 
-		console.log("[VaultRagExplorerView] Constructor");
+		const queryService = this.plugin.queryService;
+		console.log("[VaultRagExplorerView] using plugin.queryService", {
+			exists: !!queryService,
+		});
+		this.queryService = queryService;
+
+		console.log("[VaultRagExplorerView] constructor", {
+			pluginConstructor: this.plugin?.constructor?.name,
+			pluginDebugId: this.plugin?.debugInstanceId,
+			queryServiceExists: !!this.plugin?.queryService,
+		});
 	}
 
 	getViewType(): string {
@@ -309,6 +317,23 @@ export class VaultRagExplorerView extends ItemView {
 
 		const runBtn = controls.createEl("button", { text: "Run Query" });
 		runBtn.addEventListener("click", async () => {
+			console.log("[VaultRagExplorerView] pre-run queryService check", {
+				queryServiceExists: !!this.plugin?.queryService,
+				pluginDebugId: this.plugin?.debugInstanceId,
+			});
+			console.log("[VaultRagExplorerView] pre-runQuery plugin method check", {
+				hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
+				hasEndQuery: typeof (this.plugin as { endQuery?: unknown })?.endQuery,
+				pluginConstructor: this.plugin?.constructor?.name,
+			});
+
+			if (this.plugin.isIndexing) {
+				console.log("[VaultRagExplorerView] query click blocked — indexing in progress");
+				new Notice("Vault RAG Explorer is updating the index. Please wait a moment.");
+				return;
+			}
+
+			console.log("[VaultRagExplorerView] query submit start");
 			runBtn.setAttr("disabled", "true");
 			runBtn.empty();
 			runBtn.createSpan({ cls: "loading-spinner" });
@@ -316,11 +341,13 @@ export class VaultRagExplorerView extends ItemView {
 			console.log("[VaultRagExplorerView] runQuery started — spinner shown");
 			try {
 				await this.runQuery();
+			} catch (error) {
+				console.error("[VaultRagExplorerView] Query failed", error);
 			} finally {
 				runBtn.removeAttribute("disabled");
 				runBtn.empty();
 				runBtn.setText("Run Query");
-				console.log("[VaultRagExplorerView] runQuery finished — spinner removed");
+				console.log("[VaultRagExplorerView] query submit end");
 			}
 		});
 
@@ -627,6 +654,7 @@ export class VaultRagExplorerView extends ItemView {
 
 		console.error("[VaultRagExplorerView] Query failed", error);
 			new Notice("Query failed. Check console for details.");
+			throw error;
 		}
 	}
 
