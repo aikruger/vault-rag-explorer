@@ -24,7 +24,7 @@ export class AjsonWatcherService {
     this.plugin = plugin;
     this.indexBuilder = indexBuilder;
     this.db = db;
-    console.log(`${LOG} constructed`, {
+    console.log("[AjsonWatcherService] constructor received plugin", {
       pluginConstructor: this.plugin?.constructor?.name,
       hasBeginIndexing: typeof (this.plugin as { beginIndexing?: unknown })?.beginIndexing,
     });

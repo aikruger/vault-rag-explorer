@@ -308,15 +308,15 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			this.embeddingReader,
 			this.preFilterService
 		);
-		console.log(`${LOG_PREFIX} QueryService initialised with plugin coordination`, {
+		console.log("[VaultRagExplorerPlugin] after QueryService construction", {
 			queryServiceExists: !!this.queryService,
-			pluginHasBeginQuery: typeof this.beginQuery,
 		});
 
 		const qsAny = this.queryService as unknown as { plugin?: unknown };
 		console.log("[VaultRagExplorerPlugin] QueryService plugin wiring check", {
 			internalPluginConstructor: (qsAny.plugin as { constructor?: { name?: string } } | undefined)?.constructor?.name,
 			internalPluginHasBeginQuery: typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery,
+			internalPluginHasEndQuery: typeof (qsAny.plugin as { endQuery?: unknown } | undefined)?.endQuery,
 		});
 
 		if (typeof (qsAny.plugin as { beginQuery?: unknown } | undefined)?.beginQuery !== "function") {
