@@ -33,6 +33,8 @@ export interface QueryResultPayload {
 	blocks: BlockMatch[];
 }
 
+export type InspectorTarget = { kind: "file"; file: FileMatch } | { kind: "block"; block: BlockMatch } | null;
+
 export interface VaultRagExplorerSettings {
 	smartFolderPath: string;
 	indexDbPath: string;

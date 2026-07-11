@@ -51,6 +51,9 @@ export class VaultRagExplorerView extends ItemView {
 	private lastQueryResults: QueryResultPayload | null = null;
 	private syncResultsWithGraphFilter = false;
 
+	private fileMatchMap: Map<string, FileMatch> = new Map();
+	private blockMatchMap: Map<string, BlockMatch> = new Map();
+
 	constructor(leaf: WorkspaceLeaf, plugin: VaultRagExplorerPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -672,18 +675,7 @@ export class VaultRagExplorerView extends ItemView {
 	private async rerenderGraphFromFilters() {
 		if (this.lastQueryResults && this.lastQueryResults.granularity === "file") {
 			const visibleFiles = this.getVisibleFilesForGraph(this.lastQueryResults.files);
-			const mockHits = visibleFiles.map(f => ({
-				nodeType: "note" as const,
-				nodeId: f.sourceId,
-				sourceId: f.sourceId,
-				path: f.path,
-				title: f.title,
-				semanticScore: f.score,
-				wikilinkBoost: 0,
-				finalScore: f.score,
-				reasons: []
-			}));
-			await this.renderGraph(mockHits, this.plugin.lockedNodesService.getAll());
+			await this.renderFileGraph(visibleFiles, this.plugin.lockedNodesService.getAll());
 			if (this.syncResultsWithGraphFilter) {
 				this.renderResults(this.store.getState().queryResponse?.hits || []);
 			}
@@ -707,11 +699,7 @@ export class VaultRagExplorerView extends ItemView {
 			this.store.setState({ selectedNodeId: nodeId });
 			this.highlightResultItem(nodeId);
 			console.log(`[VaultRagExplorerView] graph node clicked — nodeId=${nodeId}`);
-			const response = this.store.getState().queryResponse;
-			if (response) {
-				const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeId);
-				if (hit) this.renderMockInspector(hit);
-			}
+			this.renderInspectorForNodeId(nodeId);
 		});
 
 		// Graph controls toolbar
@@ -814,9 +802,33 @@ export class VaultRagExplorerView extends ItemView {
 			});
 
 			this.store.setState({ queryResponse: response });
+
+			this.fileMatchMap.clear();
+			this.blockMatchMap.clear();
+
 			if (response.payload) {
 				this.lastQueryResults = response.payload;
 				this.graphScoreRangeOverride = null; // reset filter on new query
+
+				console.log("[VaultRagExplorerView] query payload mode", {
+					granularity: response.payload.granularity,
+					fileCount: response.payload.files.length,
+					blockCount: response.payload.blocks.length
+				});
+
+				if (response.payload.granularity === "file") {
+					for (const file of response.payload.files) {
+						this.fileMatchMap.set(`note-${file.sourceId}`, file);
+						for (const block of file.matchedBlocks) {
+							this.blockMatchMap.set(`block-${block.blockId}`, block);
+						}
+					}
+				} else {
+					for (const block of response.payload.blocks) {
+						this.blockMatchMap.set(`block-${block.blockId}`, block);
+					}
+				}
+
 				const rightPane = this.contentEl.querySelector(".vre-right-pane") as HTMLElement;
 				if (rightPane) {
 					const graphPanelEl = rightPane.querySelector(".vre-graph-panel");
@@ -831,22 +843,13 @@ export class VaultRagExplorerView extends ItemView {
 			}
 
 			this.renderResults(response.hits);
-			this.renderMockInspector(null);
+			this.renderInspectorForNodeId(null);
 
 			if (response.payload && response.payload.granularity === "file") {
 				const visibleFiles = this.getVisibleFilesForGraph(response.payload.files);
-				const mockHits = visibleFiles.map(f => ({
-					nodeType: "note" as const,
-					nodeId: f.sourceId,
-					sourceId: f.sourceId,
-					path: f.path,
-					title: f.title,
-					semanticScore: f.score,
-					wikilinkBoost: 0,
-					finalScore: f.score,
-					reasons: []
-				}));
-				await this.renderGraph(mockHits, this.plugin.lockedNodesService.getAll());
+				await this.renderFileGraph(visibleFiles, this.plugin.lockedNodesService.getAll());
+			} else if (response.payload && response.payload.granularity === "block") {
+				await this.renderBlockGraph(response.payload.blocks, this.plugin.lockedNodesService.getAll());
 			} else {
 				await this.renderGraph(response.hits, this.plugin.lockedNodesService.getAll());
 			}
@@ -880,7 +883,7 @@ export class VaultRagExplorerView extends ItemView {
 			const activeHit = currentState.queryResponse?.hits.find(h => `${h.nodeType}-${h.nodeId}` === currentState.selectedNodeId);
 			if ((activeHit && activeHit.sourceId === sourceId) || currentState.selectedNodeId === `note-${sourceId}`) {
 				this.store.setState({ selectedNodeId: null });
-				this.renderMockInspector(null);
+				this.renderInspectorForNodeId(null);
 				console.log("[VaultRagExplorerView] inspector cleared due to exclusion", { selectedNodeId: currentState.selectedNodeId });
 			}
 		}
@@ -900,7 +903,7 @@ export class VaultRagExplorerView extends ItemView {
 		const currentState = this.store.getState();
 		if (currentState.selectedNodeId === `block-${blockId}`) {
 			this.store.setState({ selectedNodeId: null });
-			this.renderMockInspector(null);
+			this.renderInspectorForNodeId(null);
 			console.log("[VaultRagExplorerView] inspector cleared due to exclusion", { selectedNodeId: currentState.selectedNodeId });
 		}
 
@@ -1180,7 +1183,7 @@ export class VaultRagExplorerView extends ItemView {
 		const inspectBtn = actions.createEl("button", { text: "Inspect" });
 			inspectBtn.addEventListener("click", () => {
 				this.store.setState({ selectedNodeId: `${hit.nodeType}-${hit.nodeId}` });
-				this.renderMockInspector(hit);
+				this.renderInspectorForNodeId(`${hit.nodeType}-${hit.nodeId}`);
 			});
 
 			const isLocked = this.plugin.lockedNodesService.isLocked(`${hit.nodeType}-${hit.nodeId}`);
@@ -1204,7 +1207,7 @@ export class VaultRagExplorerView extends ItemView {
 					new Notice(`Locked: ${hit.title}`);
 				}
 				if (this.store.getState().selectedNodeId === key) {
-					this.renderMockInspector(hit);
+					this.renderInspectorForNodeId(key);
 				}
 			});
 
@@ -1233,11 +1236,11 @@ export class VaultRagExplorerView extends ItemView {
 		}
 	}
 
-	private renderMockInspector(hit: RetrievalHit | null): void {
+	public renderInspectorForNodeId(nodeId: string | null): void {
 		if (!this.inspectorEl) return;
 		this.inspectorEl.empty();
 
-		if (!hit) {
+		if (!nodeId) {
 			this.inspectorEl.createEl("div", {
 				text: "No node selected.",
 				cls: "vre-empty-state",
@@ -1245,7 +1248,175 @@ export class VaultRagExplorerView extends ItemView {
 			return;
 		}
 
-		this.inspectorEl.createEl("h4", { text: hit.title });
+		const fileMatch = this.fileMatchMap.get(nodeId);
+		if (fileMatch) {
+			console.log("[VaultRagExplorerView] graph node resolved to file", { nodeId, sourceId: fileMatch.sourceId, path: fileMatch.path });
+			this.renderFileInspector(fileMatch);
+			return;
+		}
+
+		const blockMatch = this.blockMatchMap.get(nodeId);
+		if (blockMatch) {
+			console.log("[VaultRagExplorerView] graph node resolved to block", { nodeId, blockId: blockMatch.blockId, path: blockMatch.path });
+			this.renderBlockInspector(blockMatch);
+			return;
+		}
+
+		// Fallback for legacy RetrievalHit
+		const response = this.store.getState().queryResponse;
+		if (response) {
+			const hit = response.hits.find(h => `${h.nodeType}-${h.nodeId}` === nodeId);
+			if (hit) {
+				this.renderLegacyInspector(hit);
+				return;
+			}
+		}
+
+		this.inspectorEl.createEl("div", {
+			text: "No node selected.",
+			cls: "vre-empty-state",
+		});
+	}
+
+	private renderFileInspector(file: FileMatch): void {
+		if (!this.inspectorEl) return;
+
+		this.inspectorEl.createEl("h4", { text: file.title });
+		this.inspectorEl.createEl("div", { text: `Type: file` });
+		this.inspectorEl.createEl("div", { text: `Path: ${file.path}` });
+		this.inspectorEl.createEl("div", {
+			text: `File score: ${file.score.toFixed(3)}`
+		});
+		this.inspectorEl.createEl("div", {
+			text: `Best block score: ${file.bestBlockScore.toFixed(3)}`
+		});
+
+		const blocksList = this.inspectorEl.createEl("ul");
+		for (const block of file.matchedBlocks) {
+			blocksList.createEl("li", { text: `[${block.score.toFixed(3)}] ${block.blockLabel || 'Passage'}` });
+		}
+
+		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
+
+		actions.createEl("button", { text: "Open File" }).addEventListener("click", async () => {
+			console.log('[VaultRagExplorerView] Inspector open file clicked', { path: file.path });
+			const hit: RetrievalHit = { nodeType: "note", nodeId: file.sourceId, sourceId: file.sourceId, path: file.path, title: file.title, semanticScore: file.score, wikilinkBoost: 0, finalScore: file.score, reasons: [] };
+			await this.openHit(hit);
+		});
+
+		actions.createEl("button", { text: "Exclude File" }).addEventListener("click", () => {
+			console.log('[VaultRagExplorerView] Inspector exclude file clicked', { file });
+			this.excludeFile(file.sourceId, file.path);
+		});
+
+		const key = `note-${file.sourceId}`;
+		const isLocked = this.plugin.lockedNodesService.isLocked(key);
+
+		actions.createEl("button", { text: isLocked ? "Locked ✓" : "Lock File" }).addEventListener("click", (e) => {
+			if (this.plugin.lockedNodesService.isLocked(key)) {
+				this.plugin.lockedNodesService.unlock(key);
+				(e.target as HTMLButtonElement).setText("Lock File");
+				new Notice(`Unlocked: ${file.title}`);
+			} else {
+				this.plugin.lockedNodesService.lock({
+					nodeType: "note",
+					nodeId: file.sourceId,
+					path: file.path,
+					title: file.title,
+					lockedAt: Date.now(),
+				});
+				(e.target as HTMLButtonElement).setText("Locked ✓");
+				new Notice(`Locked: ${file.title}`);
+			}
+			const response = this.store.getState().queryResponse;
+			if (response) {
+				this.renderResults(response.hits);
+			}
+		});
+
+		// Basic Semantic Expansion (Mock for File)
+		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
+			console.log("[VaultRagExplorerView] Inspector semantic expand clicked (mock)", file);
+			new Notice("Expand Semantic not fully implemented for new file mode yet");
+		});
+
+		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", file);
+			new Notice("Expand Wikilinks not fully implemented for new file mode yet");
+		});
+	}
+
+	private renderBlockInspector(block: BlockMatch): void {
+		if (!this.inspectorEl) return;
+
+		this.inspectorEl.createEl("h4", { text: block.blockLabel || 'Passage' });
+		this.inspectorEl.createEl("div", { text: `Type: block` });
+		this.inspectorEl.createEl("div", { text: `Path: ${block.path}` });
+		this.inspectorEl.createEl("div", { text: `Block Key: ${block.blockKey}` });
+		this.inspectorEl.createEl("div", {
+			text: `Block score: ${block.score.toFixed(3)}`
+		});
+		this.inspectorEl.createEl("p", {
+			text: block.text ?? "No preview text available.",
+		});
+
+		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
+
+		actions.createEl("button", { text: "Open File at Line" }).addEventListener("click", async () => {
+			console.log('[VaultRagExplorerView] Inspector open block clicked', { path: block.path, lineStart: block.lineStart });
+			const hit: RetrievalHit = { nodeType: "block", nodeId: block.blockId, sourceId: block.sourceId, path: block.path, title: block.title, blockKey: block.blockKey, lineStart: block.lineStart || undefined, lineEnd: block.lineEnd || undefined, previewText: block.text, semanticScore: block.score, wikilinkBoost: 0, finalScore: block.score, reasons: [] };
+			await this.openHit(hit);
+		});
+
+		actions.createEl("button", { text: "Exclude Block" }).addEventListener("click", () => {
+			console.log('[VaultRagExplorerView] Inspector exclude block clicked', { block });
+			this.excludeBlock(block.blockId, block.sourceId, block.path);
+		});
+		actions.createEl("button", { text: "Exclude Parent File" }).addEventListener("click", () => {
+			console.log('[VaultRagExplorerView] Inspector exclude parent file clicked', { block });
+			this.excludeFile(block.sourceId, block.path);
+		});
+
+		const key = `block-${block.blockId}`;
+		const isLocked = this.plugin.lockedNodesService.isLocked(key);
+
+		actions.createEl("button", { text: isLocked ? "Locked ✓" : "Lock Block" }).addEventListener("click", (e) => {
+			if (this.plugin.lockedNodesService.isLocked(key)) {
+				this.plugin.lockedNodesService.unlock(key);
+				(e.target as HTMLButtonElement).setText("Lock Block");
+				new Notice(`Unlocked: ${block.blockLabel || 'Passage'}`);
+			} else {
+				this.plugin.lockedNodesService.lock({
+					nodeType: "block",
+					nodeId: block.blockId,
+					path: block.path,
+					title: block.blockLabel || 'Passage',
+					blockKey: block.blockKey,
+					lockedAt: Date.now(),
+				});
+				(e.target as HTMLButtonElement).setText("Locked ✓");
+				new Notice(`Locked: ${block.blockLabel || 'Passage'}`);
+			}
+			const response = this.store.getState().queryResponse;
+			if (response) {
+				this.renderResults(response.hits);
+			}
+		});
+
+		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
+			console.log("[VaultRagExplorerView] Inspector semantic expand clicked (mock)", block);
+			new Notice("Expand Semantic not fully implemented for new block mode yet");
+		});
+
+		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
+			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", block);
+			new Notice("Expand Wikilinks not fully implemented for new block mode yet");
+		});
+	}
+
+	private renderLegacyInspector(hit: RetrievalHit): void {
+		if (!this.inspectorEl) return;
+		this.inspectorEl.createEl("h4", { text: hit.title + " (Legacy)" });
 		this.inspectorEl.createEl("div", { text: `Type: ${hit.nodeType}` });
 		this.inspectorEl.createEl("div", { text: `Path: ${hit.path}` });
 		if (hit.blockKey) {
@@ -1257,49 +1428,17 @@ export class VaultRagExplorerView extends ItemView {
 		this.inspectorEl.createEl("p", {
 			text: hit.previewText ?? "No preview text available.",
 		});
-
-		const reasons = this.inspectorEl.createEl("ul");
-		for (const reason of hit.reasons) {
-			reasons.createEl("li", { text: reason });
-		}
-
 		const actions = this.inspectorEl.createDiv({ cls: "vre-inspector-actions" });
-
 		actions.createEl("button", { text: "Open File" }).addEventListener("click", async () => {
-
-		console.log('[VaultRagExplorerView] Inspector open file clicked', { path: hit.path, lineStart: hit.lineStart });
 			await this.openHit(hit);
 		});
 
-		if (hit.nodeType === "block") {
-			actions.createEl("button", { text: "Exclude Block" }).addEventListener("click", () => {
-				console.log('[VaultRagExplorerView] Inspector exclude block clicked', { hit });
-				this.excludeBlock(hit.nodeId, hit.sourceId, hit.path);
-			});
-			actions.createEl("button", { text: "Exclude Parent File" }).addEventListener("click", () => {
-				console.log('[VaultRagExplorerView] Inspector exclude parent file clicked', { hit });
-				this.excludeFile(hit.sourceId, hit.path);
-			});
-		} else {
-			actions.createEl("button", { text: "Exclude File" }).addEventListener("click", () => {
-				console.log('[VaultRagExplorerView] Inspector exclude file clicked', { hit });
-				this.excludeFile(hit.sourceId, hit.path);
-			});
-		}
-
 		const key = `${hit.nodeType}-${hit.nodeId}`;
 		const isLocked = this.plugin.lockedNodesService.isLocked(key);
-
 		actions.createEl("button", { text: isLocked ? "Locked ✓" : "Lock Node" }).addEventListener("click", (e) => {
-
-		console.log("[VaultRagExplorerView] Inspector lock clicked", hit);
-
 			if (this.plugin.lockedNodesService.isLocked(key)) {
 				this.plugin.lockedNodesService.unlock(key);
 				(e.target as HTMLButtonElement).setText("Lock Node");
-
-		console.log("[View] Unlocked node", hit.path);
-				new Notice(`Unlocked: ${hit.title}`);
 			} else {
 				this.plugin.lockedNodesService.lock({
 					nodeType: hit.nodeType,
@@ -1310,54 +1449,16 @@ export class VaultRagExplorerView extends ItemView {
 					lockedAt: Date.now(),
 				});
 				(e.target as HTMLButtonElement).setText("Locked ✓");
-
-		console.log("[View] Locked node", hit.path);
-				new Notice(`Locked: ${hit.title}`);
-			}
-			// Re-render results to update lock states
-			const response = this.store.getState().queryResponse;
-			if (response) {
-				this.renderResults(response.hits);
 			}
 		});
 
 		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
-
-		console.log("[VaultRagExplorerView] Inspector semantic expand clicked", hit);
-			const ownerType = hit.nodeType === "note" ? "source" : "block";
-			const state = this.store.getState();
-			const modelName = state.queryOptions.embeddingModelName || "TaylorAI/bge-micro-v2";
-
-			try {
-				const response = await this.queryService.expandSemantic(ownerType, hit.nodeId, modelName, state.queryOptions.topK);
-
-				// Merge new hits into the store
-				const currentResponse = state.queryResponse;
-				if (currentResponse) {
-					// Extremely simplistic merge for demonstration. A proper merge would deduplicate by ID.
-					const mergedHits = [...currentResponse.hits];
-					for (const newHit of response.hits) {
-						if (!mergedHits.some(h => h.nodeId === newHit.nodeId && h.nodeType === newHit.nodeType)) {
-							mergedHits.push(newHit);
-						}
-					}
-
-					const newResponse = { ...currentResponse, hits: mergedHits };
-					this.store.setState({ queryResponse: newResponse });
-					this.renderResults(newResponse.hits);
-					await this.renderGraph(newResponse.hits, this.plugin.lockedNodesService.getAll());
-					new Notice(`Expanded semantics with ${response.hits.length} hits`);
-				}
-			} catch (e) {
-
-		console.error("[VaultRagExplorerView] Expand Semantic failed", e);
-				new Notice("Expand Semantic failed");
-			}
+			console.log("[VaultRagExplorerView] Inspector semantic expand clicked (legacy)", hit);
+			new Notice("Expand Semantic not fully implemented in legacy inspector");
 		});
 
 		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
-
-		console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", hit);
+			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", hit);
 			const expander = this.plugin.wikilinkExpander;
 			const expansions = expander.expandFrom(hit.path);
 
@@ -1380,7 +1481,6 @@ export class VaultRagExplorerView extends ItemView {
 						locked: false,
 						excluded: false,
 						radius: 6,
-						expansionSource: false,
 					});
 					const srcId = `${hit.nodeType}-${hit.nodeId}`;
 					const tgtId = `note-${dstId}`;
@@ -1429,6 +1529,106 @@ export class VaultRagExplorerView extends ItemView {
 		}
 		stmt.free();
 		return result;
+	}
+
+	private async renderFileGraph(files: FileMatch[], lockedNodes: LockedNode[]): Promise<void> {
+		if (!this.graphPanel) return;
+		console.log("[VaultRagExplorerView] renderFileGraph", { fileCount: files.length });
+
+		this.excludedSourceIds.clear();
+		this.excludedPaths.clear();
+		this.preFilter.excludedSourceIds = [];
+
+		const lockedSet = new Set(lockedNodes.map(n => `note-${n.nodeId}`));
+		const nodes = files.map(file => ({
+			id: `note-${file.sourceId}`,
+			label: file.title,
+			nodeType: "note",
+			score: file.score,
+			sourceId: file.sourceId,
+			locked: lockedSet.has(`note-${file.sourceId}`),
+			excluded: false,
+			radius: 6,
+		})) as unknown as GraphNode[];
+
+		const edges: GraphEdge[] = [];
+		const resultPaths = new Set(files.map(f => f.path));
+		for (const file of files) {
+			const outlinks = this.getOutlinksForPath(file.path);
+			for (const dst of outlinks) {
+				if (resultPaths.has(dst)) {
+					const dstId = this.getSourceIdForPath(dst);
+					if (dstId) {
+						edges.push({
+							id: `edge-wl-${file.sourceId}-${dstId}`,
+							source: `note-${file.sourceId}`,
+							target: `note-${dstId}`,
+							edgeType: "wikilink",
+							weight: 1.0,
+							expansion: false,
+						} as unknown as GraphEdge);
+					}
+				}
+			}
+		}
+
+		const mockHits = files.map(f => ({
+			nodeType: "note" as const,
+			nodeId: f.sourceId,
+			sourceId: f.sourceId,
+			path: f.path,
+			title: f.title,
+			semanticScore: f.score,
+			wikilinkBoost: 0,
+			finalScore: f.score,
+			reasons: []
+		})) as RetrievalHit[];
+		try {
+			const semEdges = await this.buildSemanticEdges(mockHits);
+			this.graphPanel.setGraph(nodes, [...edges, ...semEdges]);
+		} catch (e) {
+			this.graphPanel.setGraph(nodes, edges);
+		}
+	}
+
+	private async renderBlockGraph(blocks: BlockMatch[], lockedNodes: LockedNode[]): Promise<void> {
+		if (!this.graphPanel) return;
+		console.log("[VaultRagExplorerView] renderBlockGraph", { blockCount: blocks.length });
+
+		this.excludedSourceIds.clear();
+		this.excludedPaths.clear();
+		this.preFilter.excludedSourceIds = [];
+
+		const lockedSet = new Set(lockedNodes.map(n => `block-${n.nodeId}`));
+		const nodes = blocks.map(block => ({
+			id: `block-${block.blockId}`,
+			label: block.title,
+			nodeType: "block",
+			score: block.score,
+			sourceId: block.sourceId,
+			locked: lockedSet.has(`block-${block.blockId}`),
+			excluded: false,
+			radius: 6,
+		})) as unknown as GraphNode[];
+
+		const edges: GraphEdge[] = [];
+		const mockHits = blocks.map(b => ({
+			nodeType: "block" as const,
+			nodeId: b.blockId,
+			sourceId: b.sourceId,
+			path: b.path,
+			title: b.title,
+			semanticScore: b.score,
+			wikilinkBoost: 0,
+			finalScore: b.score,
+			reasons: []
+		})) as RetrievalHit[];
+		try {
+			const semEdges = await this.buildSemanticEdges(mockHits);
+			this.graphPanel.setGraph(nodes, semEdges);
+		} catch (e) {
+			this.graphPanel.setGraph(nodes, []);
+		}
 	}
 
 	private async renderGraph(hits: RetrievalHit[], lockedNodes: LockedNode[]): Promise<void> {
