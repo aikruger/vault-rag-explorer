@@ -102,40 +102,7 @@ export class QueryService {
     // For file-first aggregation, we fetch blocks.
     const hits = this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options);
 
-    // Process block hits for new payload
-    const blockHits: BlockMatch[] = [];
-    for (const hit of hits) {
-      if (hit.nodeType === "block") {
-        blockHits.push({
-          blockId: hit.nodeId,
-          blockKey: hit.blockKey || "",
-          blockLabel: hit.title || null,
-          text: hit.previewText || "",
-          score: hit.finalScore,
-          lineStart: hit.lineStart ?? null,
-          lineEnd: hit.lineEnd ?? null,
-          sourceId: hit.sourceId,
-          path: hit.path,
-          title: hit.title,
-        });
-      }
-    }
-
-    let payload: QueryResultPayload;
-    if (granularity === "file") {
-      const files = this.aggregateBlockHitsToFiles(blockHits, retrievalCount, blocksPerDocument);
-      payload = {
-        granularity: "file",
-        files,
-        blocks: [],
-      };
-    } else {
-      payload = {
-        granularity: "block",
-        files: [],
-        blocks: blockHits.slice(0, retrievalCount),
-      };
-    }
+    const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
 
       const elapsed = Date.now() - startTime;
       console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
@@ -163,7 +130,8 @@ export class QueryService {
     ownerType: 'source' | 'block',
     ownerId: number,
     modelName: string,
-    topK: number
+    topK: number,
+    options?: import("../types").QueryOptions
   ): Promise<QueryResponse> {
     console.log(`[QueryService] expandSemantic ownerType=${ownerType} ownerId=${ownerId}`);
     const seedEmb = this.embeddingReader.loadForOwner(ownerType, ownerId, modelName);
@@ -179,14 +147,67 @@ export class QueryService {
 
     // Use seedEmb.vec as query vector. Expansion defaults to boost enabled.
     const { DEFAULT_QUERY_OPTIONS } = require("../types");
-    const hits = this.scoreAndRank(seedEmb.vec, modelName, topK, true, { ...DEFAULT_QUERY_OPTIONS, scopeFilterEnabled: false });
+    const queryOptions = options || { ...DEFAULT_QUERY_OPTIONS, scopeFilterEnabled: false };
+
+    const granularity = queryOptions.granularityOverride ?? this.plugin.settings.retrievalGranularity;
+    const retrievalCount = queryOptions.retrievalCountOverride ?? this.plugin.settings.retrievalDocumentLimit;
+    const blocksPerDocument = queryOptions.blocksPerDocumentOverride ?? this.plugin.settings.retrievalBlocksPerDocument;
+
+    const internalBlockFetchLimit = granularity === "file"
+      ? Math.max(retrievalCount * 6, retrievalCount * blocksPerDocument)
+      : retrievalCount;
+
+    const hits = this.scoreAndRank(seedEmb.vec, modelName, Math.max(topK, internalBlockFetchLimit), true, queryOptions);
+    const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
 
     return {
       queryText: `Semantic expansion of ${ownerType} ${ownerId}`,
       queryEmbeddingModel: modelName,
       hits,
+      payload,
       generatedAt: Date.now()
     };
+  }
+
+  public buildPayloadFromHits(
+    hits: RetrievalHit[],
+    granularity: "file" | "block",
+    retrievalCount: number,
+    blocksPerDocument: number
+  ): QueryResultPayload {
+    console.log("[QueryService] buildPayloadFromHits", { granularity, hitCount: hits.length, retrievalCount, blocksPerDocument });
+    const blockHits: BlockMatch[] = [];
+    for (const hit of hits) {
+      if (hit.nodeType === "block") {
+        blockHits.push({
+          blockId: hit.nodeId,
+          blockKey: hit.blockKey || "",
+          blockLabel: hit.title || null,
+          text: hit.previewText || "",
+          score: hit.finalScore,
+          lineStart: hit.lineStart ?? null,
+          lineEnd: hit.lineEnd ?? null,
+          sourceId: hit.sourceId,
+          path: hit.path,
+          title: hit.title,
+        });
+      }
+    }
+
+    if (granularity === "file") {
+      const files = this.aggregateBlockHitsToFiles(blockHits, retrievalCount, blocksPerDocument);
+      return {
+        granularity: "file",
+        files,
+        blocks: [],
+      };
+    } else {
+      return {
+        granularity: "block",
+        files: [],
+        blocks: blockHits.slice(0, retrievalCount),
+      };
+    }
   }
 
   private aggregateBlockHitsToFiles(

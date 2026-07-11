@@ -1385,15 +1385,230 @@ export class VaultRagExplorerView extends ItemView {
 			}
 		});
 
-		// Basic Semantic Expansion (Mock for File)
 		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
-			console.log("[VaultRagExplorerView] Inspector semantic expand clicked (mock)", file);
-			new Notice("Expand Semantic not fully implemented for new file mode yet");
+			console.log("[VaultRagExplorerView] Inspector semantic expand clicked", file);
+			const state = this.store.getState();
+			const modelName = state.queryOptions.embeddingModelName || "TaylorAI/bge-micro-v2";
+			const currentGranularity = this.retrievalGranularityOverride ?? this.plugin.settings.retrievalGranularity;
+
+			try {
+				const response = await this.queryService.expandSemantic("source", file.sourceId, modelName, state.queryOptions.topK, {
+					...state.queryOptions,
+					granularityOverride: currentGranularity,
+					retrievalCountOverride: this.getEffectiveRetrievalCount(currentGranularity),
+				});
+
+				console.log("[VaultRagExplorerView] semantic expansion merge start", { currentGranularity, incomingHitCount: response.hits.length });
+
+				const currentResponse = state.queryResponse;
+				if (currentResponse && currentResponse.payload && response.payload) {
+					const mergedHits = [...currentResponse.hits];
+					for (const newHit of response.hits) {
+						if (!mergedHits.some(h => h.nodeId === newHit.nodeId && h.nodeType === newHit.nodeType)) {
+							mergedHits.push(newHit);
+						}
+					}
+
+					const mergedPayload: QueryResultPayload = {
+						granularity: currentGranularity,
+						files: [...currentResponse.payload.files],
+						blocks: [...currentResponse.payload.blocks]
+					};
+
+					if (currentGranularity === "file") {
+						for (const newFile of response.payload.files) {
+							const existingFileIndex = mergedPayload.files.findIndex(f => f.sourceId === newFile.sourceId);
+							if (existingFileIndex >= 0) {
+								const existingFile = mergedPayload.files[existingFileIndex];
+								const mergedBlocks = [...existingFile.matchedBlocks];
+								for (const newBlock of newFile.matchedBlocks) {
+									if (!mergedBlocks.some(b => b.blockId === newBlock.blockId)) {
+										mergedBlocks.push(newBlock);
+									}
+								}
+								mergedBlocks.sort((a, b) => b.score - a.score);
+								mergedPayload.files[existingFileIndex] = {
+									...existingFile,
+									score: Math.max(existingFile.score, newFile.score),
+									bestBlockScore: Math.max(existingFile.bestBlockScore, newFile.bestBlockScore),
+									matchedBlocks: mergedBlocks
+								};
+							} else {
+								mergedPayload.files.push(newFile);
+							}
+						}
+					} else {
+						for (const newBlock of response.payload.blocks) {
+							if (!mergedPayload.blocks.some(b => b.blockId === newBlock.blockId)) {
+								mergedPayload.blocks.push(newBlock);
+							}
+						}
+					}
+
+					console.log("[VaultRagExplorerView] semantic expansion merge complete", { mergedFileCount: mergedPayload.files.length, mergedBlockCount: mergedPayload.blocks.length });
+
+					const newResponse = { ...currentResponse, hits: mergedHits, payload: mergedPayload };
+					this.store.setState({ queryResponse: newResponse });
+
+					// Rebuild maps
+					this.fileMatchMap.clear();
+					this.blockMatchMap.clear();
+					this.lastQueryResults = mergedPayload;
+
+					if (mergedPayload.granularity === "file") {
+						for (const f of mergedPayload.files) {
+							this.fileMatchMap.set(`note-${f.sourceId}`, f);
+							for (const b of f.matchedBlocks) {
+								this.blockMatchMap.set(`block-${b.blockId}`, b);
+							}
+						}
+					} else {
+						for (const b of mergedPayload.blocks) {
+							this.blockMatchMap.set(`block-${b.blockId}`, b);
+						}
+					}
+
+					this.renderResults(newResponse.hits);
+
+					if (mergedPayload.granularity === "file") {
+						const visibleFiles = this.getVisibleFilesForGraph(mergedPayload.files);
+						await this.renderFileGraph(visibleFiles, this.plugin.lockedNodesService.getAll());
+					} else {
+						await this.renderBlockGraph(mergedPayload.blocks, this.plugin.lockedNodesService.getAll());
+					}
+
+					new Notice(`Expanded semantics with ${response.hits.length} hits`);
+				}
+			} catch (e) {
+				console.error("[VaultRagExplorerView] Expand Semantic failed", e);
+				new Notice("Expand Semantic failed");
+			}
 		});
 
 		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
 			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", file);
-			new Notice("Expand Wikilinks not fully implemented for new file mode yet");
+			const expander = this.plugin.wikilinkExpander;
+			const expansions = expander.expandFrom(file.path);
+
+			if (expansions.length === 0) {
+				new Notice("No wikilink expansions found.");
+				return;
+			}
+
+			const state = this.store.getState();
+			const currentResponse = state.queryResponse;
+			if (currentResponse && currentResponse.payload) {
+				const currentGranularity = this.retrievalGranularityOverride ?? this.plugin.settings.retrievalGranularity;
+				const mergedPayload: QueryResultPayload = {
+					granularity: currentGranularity,
+					files: [...currentResponse.payload.files],
+					blocks: [...currentResponse.payload.blocks]
+				};
+				const mergedHits = [...currentResponse.hits];
+
+				let addedFileCount = 0;
+				const resolvedSourceIds: number[] = [];
+				for (const expansion of expansions) {
+					const dstId = this.getSourceIdForPath(expansion.path);
+					if (dstId) {
+						resolvedSourceIds.push(dstId);
+						if (currentGranularity === "file") {
+							if (!mergedPayload.files.some(f => f.sourceId === dstId)) {
+								const newTitle = expansion.path.replace('.md', '').split('/').pop() ?? expansion.path;
+								mergedPayload.files.push({
+									sourceId: dstId,
+									path: expansion.path,
+									title: newTitle,
+									score: 0.05,
+									bestBlockScore: 0,
+									matchedBlocks: []
+								});
+								mergedHits.push({
+									nodeType: "note",
+									nodeId: dstId,
+									sourceId: dstId,
+									path: expansion.path,
+									title: newTitle,
+									semanticScore: 0.05,
+									wikilinkBoost: 0,
+									finalScore: 0.05,
+									reasons: ["Expanded via wikilink"]
+								});
+								addedFileCount++;
+							}
+						} else {
+							// Block mode note-level additions
+							if (!mergedHits.some(h => h.nodeType === "note" && h.nodeId === dstId)) {
+								const newTitle = expansion.path.replace('.md', '').split('/').pop() ?? expansion.path;
+								mergedHits.push({
+									nodeType: "note",
+									nodeId: dstId,
+									sourceId: dstId,
+									path: expansion.path,
+									title: newTitle,
+									semanticScore: 0.05,
+									wikilinkBoost: 0,
+									finalScore: 0.05,
+									reasons: ["Expanded via wikilink"]
+								});
+								addedFileCount++;
+							}
+						}
+					}
+				}
+
+				console.log("[VaultRagExplorerView] wikilink expansion resolved paths", { sourcePath: file.path, expansionCount: expansions.length, resolvedSourceIds });
+				console.log("[VaultRagExplorerView] wikilink expansion merged into results", { addedFileCount, totalFileCount: mergedPayload.files.length });
+
+				const newResponse = { ...currentResponse, hits: mergedHits, payload: mergedPayload };
+				this.store.setState({ queryResponse: newResponse });
+
+				this.fileMatchMap.clear();
+				this.blockMatchMap.clear();
+				this.lastQueryResults = mergedPayload;
+
+				if (mergedPayload.granularity === "file") {
+					for (const f of mergedPayload.files) {
+						this.fileMatchMap.set(`note-${f.sourceId}`, f);
+						for (const b of f.matchedBlocks) {
+							this.blockMatchMap.set(`block-${b.blockId}`, b);
+						}
+					}
+					// File rendering via payload
+					this.renderResults(newResponse.hits);
+					const visibleFiles = this.getVisibleFilesForGraph(mergedPayload.files);
+					this.renderFileGraph(visibleFiles, this.plugin.lockedNodesService.getAll());
+				} else {
+					for (const b of mergedPayload.blocks) {
+						this.blockMatchMap.set(`block-${b.blockId}`, b);
+					}
+					// Block rendering
+					this.renderResults(newResponse.hits);
+					this.renderBlockGraph(mergedPayload.blocks, this.plugin.lockedNodesService.getAll());
+				}
+
+				// The graph rendering creates nodes, we need to explicitly inject the graph edges
+				if (this.graphPanel) {
+					const expansionEdges: unknown[] = [];
+					for (const expansion of expansions) {
+						const dstId = this.getSourceIdForPath(expansion.path);
+						if (dstId) {
+							const srcId = `note-${file.sourceId}`;
+							const tgtId = `note-${dstId}`;
+							expansionEdges.push({
+								id: `edge-expansion-${file.sourceId}-${dstId}-${expansion.direction}`,
+								source: expansion.direction === "outbound" ? srcId : tgtId,
+								target: expansion.direction === "outbound" ? tgtId : srcId,
+								edgeType: "wikilink",
+								weight: 1.0,
+								expansion: true,
+							});
+						}
+					}
+					this.graphPanel.addExpansion([], expansionEdges as GraphEdge[]);
+					new Notice(`Expanded with ${addedFileCount} wikilinks`);
+				}
+			}
 		});
 	}
 
@@ -1455,13 +1670,229 @@ export class VaultRagExplorerView extends ItemView {
 		});
 
 		actions.createEl("button", { text: "Expand Semantic" }).addEventListener("click", async () => {
-			console.log("[VaultRagExplorerView] Inspector semantic expand clicked (mock)", block);
-			new Notice("Expand Semantic not fully implemented for new block mode yet");
+			console.log("[VaultRagExplorerView] Inspector semantic expand clicked", block);
+			const state = this.store.getState();
+			const modelName = state.queryOptions.embeddingModelName || "TaylorAI/bge-micro-v2";
+			const currentGranularity = this.retrievalGranularityOverride ?? this.plugin.settings.retrievalGranularity;
+
+			try {
+				const response = await this.queryService.expandSemantic("block", block.blockId, modelName, state.queryOptions.topK, {
+					...state.queryOptions,
+					granularityOverride: currentGranularity,
+					retrievalCountOverride: this.getEffectiveRetrievalCount(currentGranularity),
+				});
+
+				console.log("[VaultRagExplorerView] semantic expansion merge start", { currentGranularity, incomingHitCount: response.hits.length });
+
+				const currentResponse = state.queryResponse;
+				if (currentResponse && currentResponse.payload && response.payload) {
+					const mergedHits = [...currentResponse.hits];
+					for (const newHit of response.hits) {
+						if (!mergedHits.some(h => h.nodeId === newHit.nodeId && h.nodeType === newHit.nodeType)) {
+							mergedHits.push(newHit);
+						}
+					}
+
+					const mergedPayload: QueryResultPayload = {
+						granularity: currentGranularity,
+						files: [...currentResponse.payload.files],
+						blocks: [...currentResponse.payload.blocks]
+					};
+
+					if (currentGranularity === "file") {
+						for (const newFile of response.payload.files) {
+							const existingFileIndex = mergedPayload.files.findIndex(f => f.sourceId === newFile.sourceId);
+							if (existingFileIndex >= 0) {
+								const existingFile = mergedPayload.files[existingFileIndex];
+								const mergedBlocks = [...existingFile.matchedBlocks];
+								for (const newBlock of newFile.matchedBlocks) {
+									if (!mergedBlocks.some(b => b.blockId === newBlock.blockId)) {
+										mergedBlocks.push(newBlock);
+									}
+								}
+								mergedBlocks.sort((a, b) => b.score - a.score);
+								mergedPayload.files[existingFileIndex] = {
+									...existingFile,
+									score: Math.max(existingFile.score, newFile.score),
+									bestBlockScore: Math.max(existingFile.bestBlockScore, newFile.bestBlockScore),
+									matchedBlocks: mergedBlocks
+								};
+							} else {
+								mergedPayload.files.push(newFile);
+							}
+						}
+					} else {
+						for (const newBlock of response.payload.blocks) {
+							if (!mergedPayload.blocks.some(b => b.blockId === newBlock.blockId)) {
+								mergedPayload.blocks.push(newBlock);
+							}
+						}
+					}
+
+					console.log("[VaultRagExplorerView] semantic expansion merge complete", { mergedFileCount: mergedPayload.files.length, mergedBlockCount: mergedPayload.blocks.length });
+
+					const newResponse = { ...currentResponse, hits: mergedHits, payload: mergedPayload };
+					this.store.setState({ queryResponse: newResponse });
+
+					// Rebuild maps
+					this.fileMatchMap.clear();
+					this.blockMatchMap.clear();
+					this.lastQueryResults = mergedPayload;
+
+					if (mergedPayload.granularity === "file") {
+						for (const f of mergedPayload.files) {
+							this.fileMatchMap.set(`note-${f.sourceId}`, f);
+							for (const b of f.matchedBlocks) {
+								this.blockMatchMap.set(`block-${b.blockId}`, b);
+							}
+						}
+					} else {
+						for (const b of mergedPayload.blocks) {
+							this.blockMatchMap.set(`block-${b.blockId}`, b);
+						}
+					}
+
+					this.renderResults(newResponse.hits);
+
+					if (mergedPayload.granularity === "file") {
+						const visibleFiles = this.getVisibleFilesForGraph(mergedPayload.files);
+						await this.renderFileGraph(visibleFiles, this.plugin.lockedNodesService.getAll());
+					} else {
+						await this.renderBlockGraph(mergedPayload.blocks, this.plugin.lockedNodesService.getAll());
+					}
+
+					new Notice(`Expanded semantics with ${response.hits.length} hits`);
+				}
+			} catch (e) {
+				console.error("[VaultRagExplorerView] Expand Semantic failed", e);
+				new Notice("Expand Semantic failed");
+			}
 		});
 
 		actions.createEl("button", { text: "Expand Wikilinks" }).addEventListener("click", () => {
 			console.log("[VaultRagExplorerView] Inspector wikilink expand clicked", block);
-			new Notice("Expand Wikilinks not fully implemented for new block mode yet");
+			const expander = this.plugin.wikilinkExpander;
+			const expansions = expander.expandFrom(block.path);
+
+			if (expansions.length === 0) {
+				new Notice("No wikilink expansions found.");
+				return;
+			}
+
+			const state = this.store.getState();
+			const currentResponse = state.queryResponse;
+			if (currentResponse && currentResponse.payload) {
+				const currentGranularity = this.retrievalGranularityOverride ?? this.plugin.settings.retrievalGranularity;
+				const mergedPayload: QueryResultPayload = {
+					granularity: currentGranularity,
+					files: [...currentResponse.payload.files],
+					blocks: [...currentResponse.payload.blocks]
+				};
+				const mergedHits = [...currentResponse.hits];
+
+				let addedFileCount = 0;
+				const resolvedSourceIds: number[] = [];
+				for (const expansion of expansions) {
+					const dstId = this.getSourceIdForPath(expansion.path);
+					if (dstId) {
+						resolvedSourceIds.push(dstId);
+						if (currentGranularity === "file") {
+							if (!mergedPayload.files.some(f => f.sourceId === dstId)) {
+								const newTitle = expansion.path.replace('.md', '').split('/').pop() ?? expansion.path;
+								mergedPayload.files.push({
+									sourceId: dstId,
+									path: expansion.path,
+									title: newTitle,
+									score: 0.05,
+									bestBlockScore: 0,
+									matchedBlocks: []
+								});
+								mergedHits.push({
+									nodeType: "note",
+									nodeId: dstId,
+									sourceId: dstId,
+									path: expansion.path,
+									title: newTitle,
+									semanticScore: 0.05,
+									wikilinkBoost: 0,
+									finalScore: 0.05,
+									reasons: ["Expanded via wikilink"]
+								});
+								addedFileCount++;
+							}
+						} else {
+							// Block mode note-level additions
+							if (!mergedHits.some(h => h.nodeType === "note" && h.nodeId === dstId)) {
+								const newTitle = expansion.path.replace('.md', '').split('/').pop() ?? expansion.path;
+								mergedHits.push({
+									nodeType: "note",
+									nodeId: dstId,
+									sourceId: dstId,
+									path: expansion.path,
+									title: newTitle,
+									semanticScore: 0.05,
+									wikilinkBoost: 0,
+									finalScore: 0.05,
+									reasons: ["Expanded via wikilink"]
+								});
+								addedFileCount++;
+							}
+						}
+					}
+				}
+
+				console.log("[VaultRagExplorerView] wikilink expansion resolved paths", { sourcePath: block.path, expansionCount: expansions.length, resolvedSourceIds });
+				console.log("[VaultRagExplorerView] wikilink expansion merged into results", { addedFileCount, totalFileCount: mergedPayload.files.length });
+
+				const newResponse = { ...currentResponse, hits: mergedHits, payload: mergedPayload };
+				this.store.setState({ queryResponse: newResponse });
+
+				this.fileMatchMap.clear();
+				this.blockMatchMap.clear();
+				this.lastQueryResults = mergedPayload;
+
+				if (mergedPayload.granularity === "file") {
+					for (const f of mergedPayload.files) {
+						this.fileMatchMap.set(`note-${f.sourceId}`, f);
+						for (const b of f.matchedBlocks) {
+							this.blockMatchMap.set(`block-${b.blockId}`, b);
+						}
+					}
+					// File rendering via payload
+					this.renderResults(newResponse.hits);
+					const visibleFiles = this.getVisibleFilesForGraph(mergedPayload.files);
+					this.renderFileGraph(visibleFiles, this.plugin.lockedNodesService.getAll());
+				} else {
+					for (const b of mergedPayload.blocks) {
+						this.blockMatchMap.set(`block-${b.blockId}`, b);
+					}
+					// Block rendering
+					this.renderResults(newResponse.hits);
+					this.renderBlockGraph(mergedPayload.blocks, this.plugin.lockedNodesService.getAll());
+				}
+
+				// The graph rendering creates nodes, we need to explicitly inject the graph edges
+				if (this.graphPanel) {
+					const expansionEdges: unknown[] = [];
+					for (const expansion of expansions) {
+						const dstId = this.getSourceIdForPath(expansion.path);
+						if (dstId) {
+							const srcId = `block-${block.blockId}`;
+							const tgtId = `note-${dstId}`;
+							expansionEdges.push({
+								id: `edge-expansion-${block.blockId}-${dstId}-${expansion.direction}`,
+								source: expansion.direction === "outbound" ? srcId : tgtId,
+								target: expansion.direction === "outbound" ? tgtId : srcId,
+								edgeType: "wikilink",
+								weight: 1.0,
+								expansion: true,
+							});
+						}
+					}
+					this.graphPanel.addExpansion([], expansionEdges as GraphEdge[]);
+					new Notice(`Expanded with ${addedFileCount} wikilinks`);
+				}
+			}
 		});
 	}
 
