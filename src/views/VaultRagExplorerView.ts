@@ -696,10 +696,7 @@ export class VaultRagExplorerView extends ItemView {
 		}
 		this.graphPanel = new D3GraphPanel(this.graphEl);
 		this.graphPanel.setOnNodeClick((nodeId) => {
-			this.store.setState({ selectedNodeId: nodeId });
-			this.highlightResultItem(nodeId);
-			console.log(`[VaultRagExplorerView] graph node clicked — nodeId=${nodeId}`);
-			this.renderInspectorForNodeId(nodeId);
+			this.selectNodeAndSync(nodeId, "graph");
 		});
 
 		// Graph controls toolbar
@@ -1007,8 +1004,9 @@ export class VaultRagExplorerView extends ItemView {
 			const visibleBlocks = file.matchedBlocks.filter(b => !this.excludedBlockIds.has(b.blockId));
 			if (visibleBlocks.length === 0 && file.matchedBlocks.length > 0) continue;
 
-			const card = this.resultsEl!.createDiv({ cls: "vre-file-result" });
+			const card = this.resultsEl!.createDiv({ cls: "vre-file-result vre-result-selectable" });
 			const nodeKey = `note-${file.sourceId}`;
+			card.setAttribute("data-node-id", nodeKey);
 			this.resultItemMap.set(nodeKey, card);
 
 			const header = card.createDiv({ cls: "vre-file-result__header" });
@@ -1023,6 +1021,10 @@ export class VaultRagExplorerView extends ItemView {
 			this.registerDomEvent(link, 'click', (event: MouseEvent) => {
 				event.preventDefault();
 				this.openHit({ nodeType: "note", nodeId: file.sourceId, sourceId: file.sourceId, path: file.path, title: file.title, semanticScore: file.score, wikilinkBoost: 0, finalScore: file.score, reasons: [] });
+			});
+
+			card.addEventListener("click", () => {
+				this.selectNodeAndSync(nodeKey, "results");
 			});
 
 			header.createEl("span", { text: file.path, cls: "vre-file-result__path" });
@@ -1114,8 +1116,9 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 	private renderHitItem(container: HTMLElement, hit: RetrievalHit, selectedId: string | null = null): void {
-		const item = container.createEl('div', { cls: 'vre-result-item' });
+		const item = container.createEl('div', { cls: 'vre-result-item vre-result-selectable' });
 		const nodeKey = `${hit.nodeType}-${hit.nodeId}`;
+		item.setAttribute("data-node-id", nodeKey);
 		this.resultItemMap.set(nodeKey, item);
 		console.log(`[VaultRagExplorerView] renderHitItem — mapped nodeKey=${nodeKey}`);
 
@@ -1156,6 +1159,10 @@ export class VaultRagExplorerView extends ItemView {
 			this.openHit(hit);
 		});
 
+		item.addEventListener("click", () => {
+			this.selectNodeAndSync(nodeKey, "results");
+		});
+
 		if (hit.previewText) {
 			item.createEl('div', {
 				text: hit.previewText.slice(0, 120) + (hit.previewText.length > 120 ? '…' : ''),
@@ -1181,9 +1188,9 @@ export class VaultRagExplorerView extends ItemView {
 		const actions = item.createDiv({ cls: "vre-result-actions" });
 
 		const inspectBtn = actions.createEl("button", { text: "Inspect" });
-			inspectBtn.addEventListener("click", () => {
-				this.store.setState({ selectedNodeId: `${hit.nodeType}-${hit.nodeId}` });
-				this.renderInspectorForNodeId(`${hit.nodeType}-${hit.nodeId}`);
+			inspectBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				this.selectNodeAndSync(`${hit.nodeType}-${hit.nodeId}`, "results");
 			});
 
 			const isLocked = this.plugin.lockedNodesService.isLocked(`${hit.nodeType}-${hit.nodeId}`);
@@ -1220,19 +1227,42 @@ export class VaultRagExplorerView extends ItemView {
 	}
 
 
+	private selectNodeAndSync(nodeId: string | null, source: "graph" | "results"): void {
+		if (source === "results") {
+			console.log("[VaultRagExplorerView] result selected", { nodeId, source });
+		} else {
+			console.log("[VaultRagExplorerView] graph selected", { nodeId, source });
+		}
+
+		this.store.setState({ selectedNodeId: nodeId });
+		this.graphPanel?.selectNode(nodeId);
+
+		if (nodeId) {
+			this.highlightResultItem(nodeId);
+		} else {
+			if (this.resultsEl) {
+				this.resultsEl.querySelectorAll(".vre-result-selectable").forEach((el) => {
+					(el as HTMLElement).removeClass("vre-result-highlighted");
+				});
+			}
+		}
+
+		this.renderInspectorForNodeId(nodeId);
+	}
+
 	private highlightResultItem(nodeId: string): void {
 		console.log(`[VaultRagExplorerView] highlightResultItem called nodeId=${nodeId}`);
 		if (!this.resultsEl) return;
-		this.resultsEl.querySelectorAll(".vre-result-item").forEach((el) => {
+		this.resultsEl.querySelectorAll(".vre-result-selectable").forEach((el) => {
 			(el as HTMLElement).removeClass("vre-result-highlighted");
 		});
 		const item = this.resultItemMap.get(nodeId);
 		if (item) {
 			item.addClass("vre-result-highlighted");
 			item.scrollIntoView({ behavior: "smooth", block: "nearest" });
-			console.log(`[VaultRagExplorerView] highlightResultItem — highlighted ${nodeId}`);
+			console.log("[VaultRagExplorerView] highlightResultItem success", { nodeId });
 		} else {
-			console.warn(`[VaultRagExplorerView] highlightResultItem — no DOM item found for nodeId=${nodeId}`);
+			console.warn("[VaultRagExplorerView] highlightResultItem missing DOM node", { nodeId, mapSize: this.resultItemMap.size });
 		}
 	}
 
