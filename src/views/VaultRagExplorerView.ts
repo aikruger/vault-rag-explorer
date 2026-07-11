@@ -600,8 +600,13 @@ export class VaultRagExplorerView extends ItemView {
 		const files = this.lastQueryResults.files;
 		if (files.length === 0) return;
 
-		let minScore = Math.min(...files.map(f => f.score));
-		let maxScore = Math.max(...files.map(f => f.score));
+		const globalMin = Math.min(...files.map(f => f.score));
+		const globalMax = Math.max(...files.map(f => f.score));
+
+		console.log("[VaultRagExplorerView] graph slider bounds", { globalMin, globalMax, fileCount: files.length });
+
+		let minScore = globalMin;
+		let maxScore = globalMax;
 
 		if (!this.graphScoreRangeOverride) {
 			this.graphScoreRangeOverride = [minScore, maxScore];
@@ -631,15 +636,29 @@ export class VaultRagExplorerView extends ItemView {
 
 		const rowMin = filterPanel.createDiv({ cls: "vre-graph-filter-row" });
 		rowMin.createEl("span", { text: "Min Score: ", cls: "vre-graph-filter-label" });
-		const sliderMin = rowMin.createEl("input", { type: "range", min: "0", max: "1", step: "0.01" });
+		const sliderMin = rowMin.createEl("input", { type: "range" });
+		sliderMin.min = String(globalMin);
+		sliderMin.max = String(globalMax);
+
+		const step = (globalMax - globalMin <= 0.1) ? "0.001" : String((globalMax - globalMin) / 200);
+		sliderMin.step = step;
 		sliderMin.value = String(minScore);
-		const valMin = rowMin.createEl("span", { text: sliderMin.value, cls: "vre-graph-filter-value" });
+		const valMin = rowMin.createEl("span", { text: minScore.toFixed(3), cls: "vre-graph-filter-value" });
 
 		const rowMax = filterPanel.createDiv({ cls: "vre-graph-filter-row" });
 		rowMax.createEl("span", { text: "Max Score: ", cls: "vre-graph-filter-label" });
-		const sliderMax = rowMax.createEl("input", { type: "range", min: "0", max: "1", step: "0.01" });
+		const sliderMax = rowMax.createEl("input", { type: "range" });
+		sliderMax.min = String(globalMin);
+		sliderMax.max = String(globalMax);
+		sliderMax.step = step;
 		sliderMax.value = String(maxScore);
-		const valMax = rowMax.createEl("span", { text: sliderMax.value, cls: "vre-graph-filter-value" });
+		const valMax = rowMax.createEl("span", { text: maxScore.toFixed(3), cls: "vre-graph-filter-value" });
+
+		if (globalMin === globalMax) {
+			sliderMin.disabled = true;
+			sliderMax.disabled = true;
+			statusText.innerText = "All files have same score";
+		}
 
 		const handleInput = () => {
 			let minVal = parseFloat(sliderMin.value);
@@ -648,9 +667,12 @@ export class VaultRagExplorerView extends ItemView {
 				minVal = maxVal;
 				sliderMin.value = String(minVal);
 			}
-			valMin.innerText = String(minVal);
-			valMax.innerText = String(maxVal);
+			valMin.innerText = minVal.toFixed(3);
+			valMax.innerText = maxVal.toFixed(3);
 			this.graphScoreRangeOverride = [minVal, maxVal];
+
+			console.log("[VaultRagExplorerView] graph slider input", { minVal, maxVal, visibleCount: this.getVisibleFilesForGraph(files).length });
+
 			updateStatus();
 			this.rerenderGraphFromFilters();
 		};
@@ -660,13 +682,12 @@ export class VaultRagExplorerView extends ItemView {
 
 		const resetBtn = filterPanel.createEl("button", { text: "Show all retrieved files", cls: "vre-graph-filter-reset" });
 		resetBtn.addEventListener("click", () => {
-			const globalMin = Math.min(...files.map(f => f.score));
-			const globalMax = Math.max(...files.map(f => f.score));
+			console.log("[VaultRagExplorerView] graph slider reset", { globalMin, globalMax });
 			this.graphScoreRangeOverride = [globalMin, globalMax];
 			sliderMin.value = String(globalMin);
 			sliderMax.value = String(globalMax);
-			valMin.innerText = String(globalMin);
-			valMax.innerText = String(globalMax);
+			valMin.innerText = globalMin.toFixed(3);
+			valMax.innerText = globalMax.toFixed(3);
 			updateStatus();
 			this.rerenderGraphFromFilters();
 		});
