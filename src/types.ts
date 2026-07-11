@@ -3,6 +3,35 @@ export const VIEW_TYPE_VAULT_RAG_EXPLORER = "vault-rag-explorer-view";
 export type NodeType = "query" | "note" | "block";
 export type EdgeType = "semantic" | "wikilink" | "backlink" | "session";
 export type RetrievalMode = "semantic" | "wikilink" | "hybrid" | "pathfinder";
+export type RetrievalGranularity = "file" | "block";
+
+export interface BlockMatch {
+	blockId: number;
+	blockKey: string;
+	blockLabel: string | null;
+	text: string;
+	score: number;
+	lineStart: number | null;
+	lineEnd: number | null;
+	sourceId: number;
+	path: string;
+	title: string;
+}
+
+export interface FileMatch {
+	sourceId: number;
+	path: string;
+	title: string;
+	score: number;
+	bestBlockScore: number;
+	matchedBlocks: BlockMatch[];
+}
+
+export interface QueryResultPayload {
+	granularity: RetrievalGranularity;
+	files: FileMatch[];
+	blocks: BlockMatch[];
+}
 
 export interface VaultRagExplorerSettings {
 	smartFolderPath: string;
@@ -17,6 +46,9 @@ export interface VaultRagExplorerSettings {
 	lastIndexBuild: number;
 	autoIndexOnLoad: boolean;
 	ragExportFolder: string;
+	retrievalGranularity: RetrievalGranularity;
+	retrievalDocumentLimit: number;
+	retrievalBlocksPerDocument: number;
 }
 
 export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
@@ -32,6 +64,9 @@ export const DEFAULT_SETTINGS: VaultRagExplorerSettings = {
 	lastIndexBuild: 0,
 	autoIndexOnLoad: false,
 	ragExportFolder: "",
+	retrievalGranularity: "file",
+	retrievalDocumentLimit: 8,
+	retrievalBlocksPerDocument: 3,
 };
 
 export interface QueryOptions {
@@ -57,6 +92,10 @@ export interface QueryOptions {
 	createdAfter: number | null;    // Unix ms
 	createdBefore: number | null;
 	propertyFilters: { key: string; value: string }[];  // metadata key=value pairs
+
+	granularityOverride?: RetrievalGranularity;
+	retrievalCountOverride?: number;
+	blocksPerDocumentOverride?: number;
 }
 
 export interface QueryRequest {
@@ -84,6 +123,7 @@ export interface QueryResponse {
 	queryText: string;
 	queryEmbeddingModel: string;
 	hits: RetrievalHit[];
+	payload?: QueryResultPayload;
 	generatedAt: number;
 }
 

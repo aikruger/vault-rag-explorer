@@ -92,6 +92,52 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 				});
 		});
 
+		// ── Retrieval Settings ──────────────────────────────────────────────────
+		new Setting(containerEl)
+			.setName("Retrieval granularity")
+			.setDesc("Choose whether semantic search returns files first or individual blocks. Default retrieval count used unless overridden in the query interface.")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption("file", "File level")
+					.addOption("block", "Block level")
+					.setValue(this.plugin.settings.retrievalGranularity)
+					.onChange(async (value: string) => {
+						this.plugin.settings.retrievalGranularity = value as "file" | "block";
+						console.log("[VaultRagExplorerSettingTab] retrievalGranularity changed", { value });
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Documents to retrieve")
+			.setDesc("Default number of files/documents to retrieve. Default retrieval count used unless overridden in the query interface.")
+			.addText((text) =>
+				text
+					.setValue(String(this.plugin.settings.retrievalDocumentLimit))
+					.onChange(async (value) => {
+						const parsed = Number(value);
+						if (!Number.isFinite(parsed) || parsed <= 0) return;
+						this.plugin.settings.retrievalDocumentLimit = parsed;
+						console.log("[VaultRagExplorerSettingTab] retrievalDocumentLimit changed", { value: parsed });
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Blocks per document")
+			.setDesc("Maximum number of matched passages/blocks to return per document in file mode.")
+			.addText((text) =>
+				text
+					.setValue(String(this.plugin.settings.retrievalBlocksPerDocument))
+					.onChange(async (value) => {
+						const parsed = Number(value);
+						if (!Number.isFinite(parsed) || parsed <= 0) return;
+						this.plugin.settings.retrievalBlocksPerDocument = parsed;
+						console.log("[VaultRagExplorerSettingTab] retrievalBlocksPerDocument changed", { value: parsed });
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// Keep the other existing settings from the original tab for completeness
 		// (indexDbPath, etc.), but as requested we focus the exact file replacement.
 

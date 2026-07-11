@@ -184,6 +184,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		console.log(`${LOG_PREFIX} settings loaded`, this.settings);
+		console.log("[VaultRagExplorerPlugin] retrieval settings loaded", {
+			retrievalGranularity: this.settings.retrievalGranularity,
+			retrievalDocumentLimit: this.settings.retrievalDocumentLimit,
+			retrievalBlocksPerDocument: this.settings.retrievalBlocksPerDocument,
+		});
 	}
 
 	async saveSettings(): Promise<void> {

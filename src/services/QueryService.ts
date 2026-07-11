@@ -1,4 +1,4 @@
-import type { QueryRequest, QueryResponse, RetrievalHit } from "../types";
+import type { QueryRequest, QueryResponse, RetrievalHit, BlockMatch, FileMatch, QueryResultPayload } from "../types";
 import type { Database } from "../db/Database";
 import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
@@ -74,7 +74,68 @@ export class QueryService {
         console.warn(`[QueryService] Model mismatch warning: SC is using ${scModel} but stored embeddings indexed with ${modelName}`);
     }
 
-    const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled, request.options);
+    const granularity = request.options.granularityOverride ?? this.plugin.settings.retrievalGranularity;
+    const retrievalCount = request.options.retrievalCountOverride ??
+      this.plugin.settings.retrievalDocumentLimit;
+    const blocksPerDocument = request.options.blocksPerDocumentOverride ??
+      this.plugin.settings.retrievalBlocksPerDocument;
+
+    console.log("[QueryService] runQuery options resolved", {
+      granularity,
+      retrievalCount,
+      blocksPerDocument,
+    });
+
+    const internalBlockFetchLimit = granularity === "file"
+      ? Math.max(retrievalCount * 6, retrievalCount * blocksPerDocument)
+      : retrievalCount;
+
+    console.log("[QueryService] internal fetch sizing", {
+      granularity,
+      retrievalCount,
+      blocksPerDocument,
+      internalBlockFetchLimit,
+    });
+
+    // Score and rank uses the internal block fetch limit if it's file mode
+    // (though scoreAndRank currently blends blocks and sources).
+    // For file-first aggregation, we fetch blocks.
+    const hits = this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options);
+
+    // Process block hits for new payload
+    const blockHits: BlockMatch[] = [];
+    for (const hit of hits) {
+      if (hit.nodeType === "block") {
+        blockHits.push({
+          blockId: hit.nodeId,
+          blockKey: hit.blockKey || "",
+          blockLabel: hit.title || null,
+          text: hit.previewText || "",
+          score: hit.finalScore,
+          lineStart: hit.lineStart ?? null,
+          lineEnd: hit.lineEnd ?? null,
+          sourceId: hit.sourceId,
+          path: hit.path,
+          title: hit.title,
+        });
+      }
+    }
+
+    let payload: QueryResultPayload;
+    if (granularity === "file") {
+      const files = this.aggregateBlockHitsToFiles(blockHits, retrievalCount, blocksPerDocument);
+      payload = {
+        granularity: "file",
+        files,
+        blocks: [],
+      };
+    } else {
+      payload = {
+        granularity: "block",
+        files: [],
+        blocks: blockHits.slice(0, retrievalCount),
+      };
+    }
 
       const elapsed = Date.now() - startTime;
       console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
@@ -83,6 +144,7 @@ export class QueryService {
         queryText: request.queryText,
         queryEmbeddingModel: modelName,
         hits,
+        payload,
         generatedAt: Date.now()
       };
     } catch (error) {
@@ -125,6 +187,66 @@ export class QueryService {
       hits,
       generatedAt: Date.now()
     };
+  }
+
+  private aggregateBlockHitsToFiles(
+    blockHits: BlockMatch[],
+    documentLimit: number,
+    blocksPerDocument: number
+  ): FileMatch[] {
+    console.log("[QueryService] aggregateBlockHitsToFiles start", {
+      blockHitCount: blockHits.length,
+      documentLimit,
+      blocksPerDocument,
+    });
+
+    const grouped = new Map<number, FileMatch>();
+
+    for (const hit of blockHits) {
+      let file = grouped.get(hit.sourceId);
+      if (!file) {
+        file = {
+          sourceId: hit.sourceId,
+          path: hit.path,
+          title: hit.title, // we might need to improve source title here
+          score: 0,
+          bestBlockScore: hit.score,
+          matchedBlocks: [],
+        };
+        grouped.set(hit.sourceId, file);
+      }
+
+      file.bestBlockScore = Math.max(file.bestBlockScore, hit.score);
+      file.matchedBlocks.push(hit);
+    }
+
+    const files = Array.from(grouped.values()).map((file) => {
+      file.matchedBlocks.sort((a, b) => b.score - a.score);
+      file.matchedBlocks = file.matchedBlocks.slice(0, blocksPerDocument);
+
+      const avgTopScore =
+        file.matchedBlocks.reduce((sum, block) => sum + block.score, 0) /
+        Math.max(file.matchedBlocks.length, 1);
+
+      file.score = file.bestBlockScore * 0.7 + avgTopScore * 0.3;
+      return file;
+    });
+
+    files.sort((a, b) => b.score - a.score);
+
+    const sliced = files.slice(0, documentLimit);
+
+    console.log("[QueryService] aggregateBlockHitsToFiles complete", {
+      fileCount: sliced.length,
+      topFiles: sliced.map((file) => ({
+        path: file.path,
+        score: file.score,
+        bestBlockScore: file.bestBlockScore,
+        matchedBlockCount: file.matchedBlocks.length,
+      })),
+    });
+
+    return sliced;
   }
 
   private scoreAndRank(
