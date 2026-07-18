@@ -169,6 +169,8 @@ export class IndexBuilder {
 
         console.log(`[IndexBuilder] parsed — sources:${sourcesCount} blocks:${blocksCount} embeddings:${embeddingsCount}`);
 
+        const embeddingsBefore = resultDummy.embeddingsWritten;
+
         if (sourcesCount > 0) {
           this.upsertSources(rawDb, parsed.sources, false, resultDummy);
           totalSources += sourcesCount;
@@ -177,8 +179,17 @@ export class IndexBuilder {
           this.upsertBlocks(rawDb, parsed.blocks, false, resultDummy);
           totalBlocks += blocksCount;
         }
-        totalEmbeddings += resultDummy.embeddingsWritten; // using upsert return logic implicitly via result dummy
-        // Note: totalEmbeddings tracks *written* embeddings based on actual upsert
+
+        const embeddingsAfter = resultDummy.embeddingsWritten;
+        const embeddingsDelta = embeddingsAfter - embeddingsBefore;
+        totalEmbeddings += embeddingsDelta;
+
+        console.log('[IndexBuilder] file write summary', {
+          filePath,
+          sourcesCount,
+          blocksCount,
+          embeddingsDelta,
+        });
 
         this.setIndexedFileMtime(rawDb, filePath, fileMtime);
       } catch (err) {

@@ -453,6 +453,9 @@ try {
         deleteBlocksForSource.run(pathVal);
         deleteEmbeddingsForSource.run(pathVal);
 
+        const existingSourceRow = getSourceId.get(pathVal);
+        const existedBefore = !!existingSourceRow;
+
         const res = insertSource.get(
           pathVal,
           src.record.title || src.record.name || null,
@@ -464,7 +467,10 @@ try {
 
         if (res) {
           const sourceId = res.id;
-          sourcesUpdated++; // Or inserted, we'll just treat as updated for simplicity in stats
+
+          if (existedBefore) sourcesUpdated++;
+          else sourcesInserted++;
+          console.log('[indexer] source upsert', { pathVal, existedBefore });
 
           // Embeddings for source
           if (src.record.embeddings && typeof src.record.embeddings === 'object') {
@@ -569,6 +575,21 @@ try {
   }
 } catch (err) {
   console.error('[indexer] FATAL:', err.message);
+
+  emitProgress({
+    phase: 'fatal',
+    processedFiles: typeof i !== 'undefined' ? i : 0,
+    totalFiles: ajsonFiles.length,
+    lastFile: '',
+    sourcesInserted,
+    sourcesUpdated,
+    sourcesDeleted,
+    blocksUpserted,
+    embeddingsUpserted,
+    errors: totalErrors + 1,
+    error: err.message,
+  });
+
   process.exit(1);
 }
 
@@ -582,7 +603,9 @@ emitProgress({
   sourcesDeleted,
   blocksUpserted,
   embeddingsUpserted,
-  errors: totalErrors
+  errors: totalErrors,
+  lastFile: '',
+  error: null,
 });
 
 const dbSize = fs.statSync(dbPath).size;

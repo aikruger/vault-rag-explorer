@@ -31,10 +31,9 @@ progress = {
     "status": "running",
     "startedAt": started_at,
     "heartbeatAt": started_at,
-    "completedAt": None,
     "existingSources": existing_sources,
-    "processedFiles": 0,
     "totalFiles": 0,
+    "processedFiles": 0,
     "sourcesInserted": 0,
     "sourcesUpdated": 0,
     "sourcesDeleted": 0,
@@ -42,13 +41,13 @@ progress = {
     "embeddingsUpserted": 0,
     "errors": 0,
     "lastFile": "",
+    "completedAt": None,
     "error": None,
     "pid": None,
     "exitCode": None,
 }
 progress_file.write_text(json.dumps(progress))
 print(f'[run-indexer] initial progress written: {progress}')
-print(f'[run-indexer] Progress file: {progress_file}')
 
 proc = subprocess.Popen(
     ['node', str(node_script), vault_root],
@@ -59,7 +58,7 @@ proc = subprocess.Popen(
 progress["pid"] = proc.pid
 progress["heartbeatAt"] = int(time.time() * 1000)
 progress_file.write_text(json.dumps(progress))
-print(f'[run-indexer] process started: pid={proc.pid}')
+print(f'[run-indexer] subprocess started', {"pid": proc.pid})
 
 for line in proc.stdout:
     line = line.rstrip()
@@ -68,24 +67,26 @@ for line in proc.stdout:
             payload = json.loads(line[len('[indexer-progress] '):])
 
             progress["heartbeatAt"] = int(time.time() * 1000)
+            progress["existingSources"] = progress.get("existingSources", existing_sources)
+            progress["totalFiles"] = payload.get("totalFiles", progress["totalFiles"])
+            progress["processedFiles"] = payload.get("processedFiles", progress["processedFiles"])
+            progress["sourcesInserted"] = payload.get("sourcesInserted", progress["sourcesInserted"])
+            progress["sourcesUpdated"] = payload.get("sourcesUpdated", progress["sourcesUpdated"])
+            progress["sourcesDeleted"] = payload.get("sourcesDeleted", progress["sourcesDeleted"])
+            progress["blocksUpserted"] = payload.get("blocksUpserted", progress["blocksUpserted"])
+            progress["embeddingsUpserted"] = payload.get("embeddingsUpserted", progress["embeddingsUpserted"])
+            progress["errors"] = payload.get("errors", progress["errors"])
+            progress["lastFile"] = payload.get("lastFile", progress["lastFile"])
 
-            if payload.get('phase') == 'start':
-                progress["totalFiles"] = payload.get('totalFiles', 0)
-                progress["existingSources"] = payload.get('existingSources', existing_sources)
+            phase = payload.get("phase")
+            if phase == "complete":
+                progress["status"] = "complete"
+                progress["completedAt"] = int(time.time() * 1000)
             else:
-                progress["totalFiles"] = payload.get('totalFiles', progress["totalFiles"])
-                progress["processedFiles"] = payload.get('processedFiles', progress["processedFiles"])
-                progress["lastFile"] = payload.get('lastFile', progress["lastFile"])
-
-                progress["sourcesInserted"] = payload.get('sourcesInserted', progress["sourcesInserted"])
-                progress["sourcesUpdated"] = payload.get('sourcesUpdated', progress["sourcesUpdated"])
-                progress["sourcesDeleted"] = payload.get('sourcesDeleted', progress["sourcesDeleted"])
-                progress["blocksUpserted"] = payload.get('blocksUpserted', progress["blocksUpserted"])
-                progress["embeddingsUpserted"] = payload.get('embeddingsUpserted', progress["embeddingsUpserted"])
-                progress["errors"] = payload.get('errors', progress["errors"])
+                progress["status"] = "running"
 
             progress_file.write_text(json.dumps(progress))
-            print(f'[run-indexer] progress updated: files={progress["processedFiles"]}/{progress["totalFiles"]}')
+            print(f"[run-indexer] wrote progress update: phase={phase} processed={progress['processedFiles']}/{progress['totalFiles']}")
         except Exception as e:
             print(f"[run-indexer] error parsing progress JSON: {e}")
             print(line)
@@ -93,12 +94,15 @@ for line in proc.stdout:
         print(line)  # pass through to terminal
 
 proc.wait()
+status = "complete" if proc.returncode == 0 else "error"
 
-progress["status"] = "complete" if proc.returncode == 0 else "error"
+progress["heartbeatAt"] = int(time.time() * 1000)
 progress["completedAt"] = int(time.time() * 1000)
-progress["heartbeatAt"] = progress["completedAt"]
 progress["exitCode"] = proc.returncode
-progress["error"] = None if proc.returncode == 0 else f"Exit code {proc.returncode}"
+progress["status"] = status
+if status == "error":
+    progress["error"] = f"Exit code {proc.returncode}"
+
 progress_file.write_text(json.dumps(progress))
-print(f'[run-indexer] terminal progress written: {progress}')
-print(f'[run-indexer] Done — status: {progress["status"]}')
+print(f"[run-indexer] terminal progress written: {progress}")
+print(f"[run-indexer] Done — status: {status}")
