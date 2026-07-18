@@ -51,18 +51,24 @@ if (ajsonFiles.length === 0) {
 // ── CREATE DB ────────────────────────────────────────────────────────────────
 fs.mkdirSync(dbDir, { recursive: true });
 
-if (fs.existsSync(dbPath)) {
-  fs.unlinkSync(dbPath);
-  console.log('[indexer] deleted existing DB for clean rebuild');
-}
+const dbAlreadyExists = fs.existsSync(dbPath);
+console.log('[indexer] opening database', { dbPath, dbAlreadyExists });
 
-const db = new DatabaseSync(dbPath);
-console.log('[indexer] DB created');
+let db;
+try {
+  db = new DatabaseSync(dbPath);
+  console.log('[indexer] DB opened');
+} catch (err) {
+  console.error('[indexer] failed to open smart_index.db; likely locked by Obsidian', { dbPath, error: err.message });
+  process.exit(1);
+}
 
 // ── SCHEMA ───────────────────────────────────────────────────────────────────
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous  = NORMAL;
+  PRAGMA busy_timeout = 10000;
+  PRAGMA foreign_keys = ON;
 
   CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +144,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_wikilinks_dst ON wikilinks(dst_source_id);
 `);
 
-console.log('[indexer] schema created (6 tables)');
+console.log('[indexer] schema ready');
 
 // ── PREPARED STATEMENTS ──────────────────────────────────────────────────────
 const insertSource = db.prepare(
@@ -185,21 +191,215 @@ const getIndexedFileMtime = db.prepare(
 );
 
 const getSourceId = db.prepare(`SELECT id FROM sources WHERE path = ?`);
-const getBlockId = db.prepare(`SELECT id FROM blocks WHERE block_key = ?`);
 
-// ── PARSE AND INSERT ─────────────────────────────────────────────────────────
-let totalSources    = 0;
-let totalBlocks     = 0;
-let totalEmbeddings = 0;
+const getAllIndexedFiles = db.prepare(`SELECT filepath FROM index_file_meta`);
+const deleteEmbeddingsForSource = db.prepare(`
+  DELETE FROM embeddings
+  WHERE owner_type='source'
+    AND owner_id IN (SELECT id FROM sources WHERE path = ?)
+`);
+const deleteEmbeddingsForBlocksOfSource = db.prepare(`
+  DELETE FROM embeddings
+  WHERE owner_type='block'
+    AND owner_id IN (SELECT id FROM blocks WHERE source_id IN (SELECT id FROM sources WHERE path = ?))
+`);
+const deleteBlocksForSource = db.prepare(`
+  DELETE FROM blocks WHERE source_id IN (SELECT id FROM sources WHERE path = ?)
+`);
+const deleteWikilinksForSource = db.prepare(`
+  DELETE FROM wikilinks WHERE src_source_id IN (SELECT id FROM sources WHERE path = ?)
+`);
+const deleteSourceByPath = db.prepare(`DELETE FROM sources WHERE path = ?`);
+const deleteFileMeta = db.prepare(`DELETE FROM index_file_meta WHERE filepath = ?`);
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+
+function normalizeSourceKey(key) {
+  return key.replace(/^smart_sources:/, '');
+}
+
+function normalizeBlockKey(key) {
+  return key.replace(/^smart_blocks:/, '');
+}
+
+function sourcePathFromBlockKey(blockKey) {
+  const normalized = normalizeBlockKey(blockKey);
+  const hashIndex = normalized.indexOf('#');
+  return hashIndex >= 0 ? normalized.slice(0, hashIndex) : normalized;
+}
+
+function deriveLogicalSourcePathFromAjsonPath(ajsonPath) {
+  const filename = path.basename(ajsonPath, '.ajson');
+  return filename.replace(/#/g, '/') + '.md';
+}
+
+function parseAjsonRecords(raw, filePath) {
+  console.log('[indexer] parseAjsonRecords start', { filePath, length: raw.length });
+  // strip BOM
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+
+  const trimmed = raw.trim();
+  const records = [];
+
+  // Case 1: whole-file JSON object
+  try {
+    const obj = JSON.parse(trimmed);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      for (const [key, value] of Object.entries(obj)) {
+        records.push({ key, record: value, rawJson: JSON.stringify(value) });
+      }
+      console.log('[indexer] parseAjsonRecords parsed full JSON object', { filePath, count: records.length });
+      return records;
+    }
+  } catch (e) {
+    console.log('[indexer] parseAjsonRecords full-object parse failed, falling back to line parser', { filePath, error: e.message });
+  }
+
+  // Case 2: fallback scanner for top-level "key": {...}
+  let pos = 0;
+  while (pos < trimmed.length) {
+    // skip whitespace
+    while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
+    if (pos >= trimmed.length) break;
+
+    // We expect a key wrapped in quotes: "smart_sources:file.md"
+    if (trimmed[pos] !== '"') {
+      // Not a key string, try to advance to next quote
+      pos++;
+      continue;
+    }
+
+    const keyStart = pos + 1;
+    let keyEnd = keyStart;
+    while (keyEnd < trimmed.length && trimmed[keyEnd] !== '"') {
+      // handle escaped quotes if any
+      if (trimmed[keyEnd] === '\\' && trimmed[keyEnd+1] === '"') keyEnd++;
+      keyEnd++;
+    }
+
+    if (keyEnd >= trimmed.length) break; // malformed
+
+    const key = trimmed.slice(keyStart, keyEnd);
+    pos = keyEnd + 1; // skip closing quote
+
+    // Now look for the colon
+    while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
+    if (pos >= trimmed.length || trimmed[pos] !== ':') {
+      // Not a valid key-value pair, move on
+      continue;
+    }
+    pos++; // skip colon
+
+    // Now find the JSON value by tracking braces/brackets
+    while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
+    if (pos >= trimmed.length) break;
+
+    const valStart = pos;
+    let valEnd = pos;
+
+    if (trimmed[valStart] === '{' || trimmed[valStart] === '[') {
+      const openChar = trimmed[valStart];
+      const closeChar = openChar === '{' ? '}' : ']';
+      let depth = 0;
+      let inString = false;
+
+      while (valEnd < trimmed.length) {
+        const char = trimmed[valEnd];
+        if (inString) {
+          if (char === '\\') valEnd++; // skip escaped char
+          else if (char === '"') inString = false;
+        } else {
+          if (char === '"') inString = true;
+          else if (char === openChar) depth++;
+          else if (char === closeChar) {
+            depth--;
+            if (depth === 0) {
+              valEnd++; // include the closing brace/bracket
+              break;
+            }
+          }
+        }
+        valEnd++;
+      }
+    } else {
+      // primitive value, unlikely but possible. read until comma or newline
+      while (valEnd < trimmed.length && trimmed[valEnd] !== ',' && trimmed[valEnd] !== '\n') {
+        valEnd++;
+      }
+    }
+
+    const jsonPart = trimmed.slice(valStart, valEnd).trim();
+    pos = valEnd;
+
+    // Optional comma
+    while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++;
+    if (pos < trimmed.length && trimmed[pos] === ',') pos++;
+
+    try {
+      const record = JSON.parse(jsonPart);
+      records.push({ key, record, rawJson: jsonPart });
+    } catch (e) {
+      console.warn(`[indexer]   JSON parse error on key "${key}":`, e.message);
+    }
+  }
+
+  return records;
+}
+
+function emitProgress(payload) {
+  process.stdout.write(`[indexer-progress] ${JSON.stringify(payload)}\n`);
+}
+
+function removeMissingFiles(currentAjsonPaths) {
+  console.log('[indexer] removeMissingFiles start', { currentCount: currentAjsonPaths.size });
+  let deleted = 0;
+
+  for (const row of getAllIndexedFiles.all()) {
+    const indexedPath = row.filepath;
+    if (!currentAjsonPaths.has(indexedPath)) {
+      console.log('[indexer] removing orphaned indexed file', { indexedPath });
+      const logicalSourcePath = deriveLogicalSourcePathFromAjsonPath(indexedPath);
+      deleteEmbeddingsForBlocksOfSource.run(logicalSourcePath);
+      deleteEmbeddingsForSource.run(logicalSourcePath);
+      deleteWikilinksForSource.run(logicalSourcePath);
+      deleteBlocksForSource.run(logicalSourcePath);
+      deleteSourceByPath.run(logicalSourcePath);
+      deleteFileMeta.run(indexedPath);
+      deleted++;
+    }
+  }
+
+  console.log('[indexer] removeMissingFiles complete', { deleted });
+  return deleted;
+}
+
+// ── PROCESS FILES ────────────────────────────────────────────────────────────
+let sourcesInserted = 0;
+let sourcesUpdated  = 0;
+let sourcesDeleted  = 0;
+let blocksUpserted  = 0;
+let embeddingsUpserted = 0;
 let totalErrors     = 0;
 
-// Single transaction wraps everything — ~50x faster than per-row commits
-db.exec('BEGIN');
+let existingSources = 0;
+try {
+  const cnt = db.prepare('SELECT COUNT(*) as c FROM sources').get();
+  if (cnt) existingSources = cnt.c;
+} catch (e) {}
+
+emitProgress({
+  phase: 'start',
+  totalFiles: ajsonFiles.length,
+  existingSources
+});
+
+// Remove missing
+const currentAjsonPaths = new Set(ajsonFiles);
+sourcesDeleted = removeMissingFiles(currentAjsonPaths);
 
 try {
   let i = 0;
   for (const filePath of ajsonFiles) {
-    console.log(`[indexer] progress file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
     i++;
 
     const fileStat = fs.statSync(filePath);
@@ -213,53 +413,85 @@ try {
 
     if (storedMtime !== null && storedMtime === fileMtime) {
       console.log(`[indexer] file unchanged (mtime match), skipping: ${filePath}`);
+      emitProgress({
+        phase: 'file',
+        processedFiles: i,
+        totalFiles: ajsonFiles.length,
+        lastFile: filePath,
+        sourcesInserted,
+        sourcesUpdated,
+        sourcesDeleted,
+        blocksUpserted,
+        embeddingsUpserted,
+        errors: totalErrors
+      });
       continue;
     }
 
     const raw = fs.readFileSync(filePath, 'utf8');
-    const lines = raw.split('\n').filter(l => l.trim().length > 0);
+    const records = parseAjsonRecords(raw, filePath);
 
-    for (const line of lines) {
-      // SC .ajson format: "key": {json object}
-      // Leading " is always present; find the ": separator
-      const sepIdx = line.indexOf('": ');
-      if (sepIdx === -1) {
-        console.warn('[indexer]   skipping malformed line (no key separator):', line.slice(0, 80));
-        continue;
+    db.exec('BEGIN TRANSACTION');
+    try {
+      // Find the source record and all block records
+      const sourceRecords = [];
+      const blockRecords = [];
+
+      for (const item of records) {
+        if (!item.key.includes('#')) {
+          sourceRecords.push(item);
+        } else {
+          blockRecords.push(item);
+        }
       }
 
-      const key      = line.slice(1, sepIdx);   // strip leading "
-      const jsonPart = line.slice(sepIdx + 3);  // everything after ": "
+      for (const src of sourceRecords) {
+        const pathVal = normalizeSourceKey(src.key);
 
-      let record;
-      try {
-        record = JSON.parse(jsonPart);
-      } catch (e) {
-        console.warn(`[indexer]   JSON parse error on key "${key}":`, e.message);
-        totalErrors++;
-        continue;
-      }
+        // Delete old blocks and embeddings
+        deleteEmbeddingsForBlocksOfSource.run(pathVal);
+        deleteBlocksForSource.run(pathVal);
+        deleteEmbeddingsForSource.run(pathVal);
 
-      // ── Source record (no '#' in key = file-level)
-      let ownerId = null;
-      let ownerType = key.includes('#') ? 'block' : 'source';
-
-      if (ownerType === 'source') {
         const res = insertSource.get(
-          key, // path
-          record.title || record.name || null, // title
-          JSON.stringify(record.metadata || {}), // metadata_json
-          jsonPart, // raw_json
-          record.mtime ?? null, // mtime
-          record.hash || null // hash
+          pathVal,
+          src.record.title || src.record.name || null,
+          JSON.stringify(src.record.metadata || {}),
+          src.rawJson,
+          src.record.mtime ?? null,
+          src.record.hash || null
         );
-        if (res) ownerId = res.id;
-        totalSources++;
-      } else {
-        // ── Block record (has '#' separator)
-        const sourcePath = key.split('#')[0];
 
-        // Find source_id
+        if (res) {
+          const sourceId = res.id;
+          sourcesUpdated++; // Or inserted, we'll just treat as updated for simplicity in stats
+
+          // Embeddings for source
+          if (src.record.embeddings && typeof src.record.embeddings === 'object') {
+            for (const [modelName, modelData] of Object.entries(src.record.embeddings)) {
+              const vec = modelData?.vec ?? modelData?.vector ?? null;
+              if (Array.isArray(vec) && vec.length > 0) {
+                const arr = new Float32Array(vec);
+                let sumSq = 0;
+                for (let k = 0; k < arr.length; k++) sumSq += (arr[k] || 0) * (arr[k] || 0);
+                const norm = Math.sqrt(sumSq);
+                const isNormalized = Math.abs(norm - 1.0) < 1e-4;
+                const blob = Buffer.from(arr.buffer);
+
+                insertEmbedding.run(
+                  'source', sourceId, modelName, vec.length, "float32", norm, isNormalized ? 1 : 0, blob
+                );
+                embeddingsUpserted++;
+              }
+            }
+          }
+        }
+      }
+
+      for (const blk of blockRecords) {
+        const blockKey = normalizeBlockKey(blk.key);
+        const sourcePath = sourcePathFromBlockKey(blockKey);
+
         let sourceId = null;
         try {
            const row = getSourceId.get(sourcePath);
@@ -267,87 +499,100 @@ try {
         } catch(e){}
 
         if (!sourceId) {
-          console.warn(`[indexer]   skipping block ${key} - source not found`);
+          console.warn(`[indexer]   skipping block ${blockKey} - source not found for path ${sourcePath}`);
+          totalErrors++;
           continue;
         }
 
-        const content = record.content ?? record.text ?? "";
+        const content = blk.record.content ?? blk.record.text ?? "";
+        const blockPath = sourcePath;
 
         const res = insertBlock.get(
-          sourceId, // source_id
-          key, // block_key
-          sourcePath, // block_path
-          record.label || null, // block_label
-          record.line_start || null, // line_start
-          record.line_end || null, // line_end
-          content, // text
-          content.length, // text_length
-          JSON.stringify(record.metadata || {}), // metadata_json
-          jsonPart // raw_json
+          sourceId,
+          blockKey,
+          blockPath,
+          blk.record.label || null,
+          blk.record.line_start || null,
+          blk.record.line_end || null,
+          content,
+          content.length,
+          JSON.stringify(blk.record.metadata || {}),
+          blk.rawJson
         );
-        if (res) ownerId = res.id;
-        totalBlocks++;
-      }
 
-      // ── Embeddings — iterate over model keys inside record.embeddings
-      if (record.embeddings && typeof record.embeddings === 'object') {
-        for (const [modelName, modelData] of Object.entries(record.embeddings)) {
-          const vec = modelData?.vec ?? modelData?.vector ?? null;
+        if (res) {
+          const blockId = res.id;
+          blocksUpserted++;
 
-          if (!Array.isArray(vec) || vec.length === 0) {
-            console.warn(`[indexer]   WARNING: no vec array under model "${modelName}" for key "${key}"`);
-            continue;
+          // Embeddings for block
+          if (blk.record.embeddings && typeof blk.record.embeddings === 'object') {
+            for (const [modelName, modelData] of Object.entries(blk.record.embeddings)) {
+              const vec = modelData?.vec ?? modelData?.vector ?? null;
+              if (Array.isArray(vec) && vec.length > 0) {
+                const arr = new Float32Array(vec);
+                let sumSq = 0;
+                for (let k = 0; k < arr.length; k++) sumSq += (arr[k] || 0) * (arr[k] || 0);
+                const norm = Math.sqrt(sumSq);
+                const isNormalized = Math.abs(norm - 1.0) < 1e-4;
+                const blob = Buffer.from(arr.buffer);
+
+                insertEmbedding.run(
+                  'block', blockId, modelName, vec.length, "float32", norm, isNormalized ? 1 : 0, blob
+                );
+                embeddingsUpserted++;
+              }
+            }
           }
-
-          if (!ownerId) {
-             console.warn(`[indexer]   WARNING: owner not found for embedding key "${key}"`);
-             continue;
-          }
-
-          // pack embedding to blob
-          const arr = new Float32Array(vec);
-          let sumSq = 0;
-          for (let k = 0; k < arr.length; k++) sumSq += (arr[k] || 0) * (arr[k] || 0);
-          const norm = Math.sqrt(sumSq);
-          const isNormalized = Math.abs(norm - 1.0) < 1e-4;
-          const blob = Buffer.from(arr.buffer);
-
-          insertEmbedding.run(
-            ownerType,
-            ownerId,
-            modelName,
-            vec.length, // dim
-            "float32", // dtype
-            norm, // norm
-            isNormalized ? 1 : 0, // is_normalized
-            blob // embedding
-          );
-          totalEmbeddings++;
         }
       }
+
+      setIndexedFileMtime.run(filePath, fileMtime);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      console.error(`[indexer] error processing file ${filePath}:`, e.message);
+      totalErrors++;
     }
 
-    setIndexedFileMtime.run(filePath, fileMtime);
+    emitProgress({
+      phase: 'file',
+      processedFiles: i,
+      totalFiles: ajsonFiles.length,
+      lastFile: filePath,
+      sourcesInserted,
+      sourcesUpdated,
+      sourcesDeleted,
+      blocksUpserted,
+      embeddingsUpserted,
+      errors: totalErrors
+    });
   }
-
-  db.exec('COMMIT');
-  console.log('[indexer] transaction committed');
-
 } catch (err) {
-  db.exec('ROLLBACK');
-  console.error('[indexer] FATAL: transaction rolled back due to error:', err.message);
+  console.error('[indexer] FATAL:', err.message);
   process.exit(1);
 }
 
 // ── SUMMARY ──────────────────────────────────────────────────────────────────
+emitProgress({
+  phase: 'complete',
+  processedFiles: ajsonFiles.length,
+  totalFiles: ajsonFiles.length,
+  sourcesInserted,
+  sourcesUpdated,
+  sourcesDeleted,
+  blocksUpserted,
+  embeddingsUpserted,
+  errors: totalErrors
+});
+
 const dbSize = fs.statSync(dbPath).size;
 
 console.log('\n[indexer] ── BUILD COMPLETE ───────────────────────────────────');
-console.log('[indexer] sources    :', totalSources);
-console.log('[indexer] blocks     :', totalBlocks);
-console.log('[indexer] embeddings :', totalEmbeddings);
-console.log('[indexer] errors     :', totalErrors);
-console.log('[indexer] db size    :', dbSize, 'bytes');
-console.log('[indexer] db path    :', dbPath);
+console.log('[indexer] sources updated :', sourcesUpdated);
+console.log('[indexer] blocks upserted :', blocksUpserted);
+console.log('[indexer] embeddings      :', embeddingsUpserted);
+console.log('[indexer] sources deleted :', sourcesDeleted);
+console.log('[indexer] errors          :', totalErrors);
+console.log('[indexer] db size         :', dbSize, 'bytes');
 
 db.close();

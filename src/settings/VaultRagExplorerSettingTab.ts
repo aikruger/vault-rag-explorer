@@ -74,12 +74,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			btn.setButtonText('Build Index (External)')
 				.setCta()
 				.onClick(async () => {
-					const fs = require('fs');
-					const path = require('path');
-					const basePath = (this.plugin.app.vault.adapter as unknown as { basePath: string }).basePath;
-					const cmd = `python "${path.join(basePath, 'indexer', 'run-indexer.py')}" "${basePath}"`;
-					new Notice(`Run this in your terminal:\n${cmd}`, 15000);
-					console.log('[SettingTab] External indexer command:', cmd);
+					void this.startExternalIndex();
 				});
 		});
 
@@ -232,12 +227,85 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			});
 	}
 
+	private indexProcess: any = null;
+
+	private getVaultRoot(): string {
+		const adapter = this.app.vault.adapter as { basePath?: string };
+		const basePath = adapter?.basePath;
+		console.log('[SettingTab] getVaultRoot', { basePath });
+		if (!basePath) throw new Error('Vault basePath not available');
+		return basePath;
+	}
+
+	private getPluginDir(): string {
+		const path = require('path');
+		const vaultRoot = this.getVaultRoot();
+		const pluginDir = path.join(vaultRoot, '.obsidian', 'plugins', this.plugin.manifest.id);
+		console.log('[SettingTab] getPluginDir', { pluginDir });
+		return pluginDir;
+	}
+
+	private getIndexerPy(): string {
+		const path = require('path');
+		const scriptPath = path.join(this.getPluginDir(), 'indexer', 'run-indexer.py');
+		console.log('[SettingTab] getIndexerPy', { scriptPath });
+		return scriptPath;
+	}
+
+	private async startExternalIndex(): Promise<void> {
+		if (this.indexProcess) {
+			new Notice('Indexer already running');
+			console.log('[SettingTab] startExternalIndex skipped: already running');
+			return;
+		}
+
+		const fs = require('fs');
+		const { spawn } = require('child_process');
+
+		const vaultRoot = this.getVaultRoot();
+		const scriptPath = this.getIndexerPy();
+
+		if (!fs.existsSync(scriptPath)) {
+			console.error('[SettingTab] missing run-indexer.py', { scriptPath });
+			new Notice('run-indexer.py not found in plugin indexer folder');
+			return;
+		}
+
+		console.log('[SettingTab] launching external indexer', { scriptPath, vaultRoot });
+
+		this.indexProcess = spawn('python', [scriptPath, vaultRoot], {
+			cwd: vaultRoot,
+			windowsHide: true,
+			stdio: ['ignore', 'pipe', 'pipe']
+		});
+
+		this.indexProcess.stdout.on('data', (buf: Buffer) => {
+			const text = buf.toString();
+			console.log('[SettingTab][indexer stdout]', text);
+		});
+
+		this.indexProcess.stderr.on('data', (buf: Buffer) => {
+			const text = buf.toString();
+			console.error('[SettingTab][indexer stderr]', text);
+		});
+
+		this.indexProcess.on('close', (code: number) => {
+			console.log('[SettingTab] external indexer exited', { code });
+			this.indexProcess = null;
+			void this.refreshIndexStatus(this.containerEl, this.containerEl.querySelector('.vre-index-status') as HTMLElement);
+			new Notice(code === 0 ? 'Index build completed' : `Index build failed (${code})`);
+		});
+
+		new Notice('External index build started');
+		void this.refreshIndexStatus(this.containerEl, this.containerEl.querySelector('.vre-index-status') as HTMLElement);
+	}
+
 	private async refreshIndexStatus(containerEl: HTMLElement, statusDiv?: HTMLElement): Promise<void> {
 		const fs = require('fs');
 		const path = require('path');
 		const basePath = (this.plugin.app.vault.adapter as unknown as { basePath: string }).basePath;
 		const progressFile = path.join(
-			basePath, '.obsidian', 'plugins', 'vault-rag-explorer', 'index-progress.json'
+			this.getPluginDir(), 'index-progress.json'
 		);
 		console.log('[SettingTab] refreshIndexStatus reading:', progressFile);
 
@@ -254,15 +322,45 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			const prog = JSON.parse(raw) as {
 				status: string; filesProcessed: number; totalFiles: number;
 				lastFile: string; completedAt: number | null; error: string | null;
+				existingSources?: number; sourcesInserted?: number; sourcesUpdated?: number;
+				sourcesDeleted?: number; blocksUpserted?: number; embeddingsUpserted?: number;
+				errors?: number;
 			};
-			console.log('[SettingTab] index progress:', prog);
 
 			statusDiv.createEl('p', {
 				text: `Status: ${prog.status.toUpperCase()}`
 			});
 			statusDiv.createEl('p', {
-				text: `Progress: ${prog.filesProcessed} / ${prog.totalFiles} files`
+				text: `Existing DB sources: ${prog.existingSources ?? 0}`
 			});
+			statusDiv.createEl('p', {
+				text: `Files discovered: ${prog.totalFiles}`
+			});
+			statusDiv.createEl('p', {
+				text: `Files processed: ${prog.filesProcessed}`
+			});
+			statusDiv.createEl('p', {
+				text: `Sources inserted: ${prog.sourcesInserted ?? 0}`
+			});
+			statusDiv.createEl('p', {
+				text: `Sources updated: ${prog.sourcesUpdated ?? 0}`
+			});
+			statusDiv.createEl('p', {
+				text: `Sources deleted: ${prog.sourcesDeleted ?? 0}`
+			});
+			statusDiv.createEl('p', {
+				text: `Blocks upserted: ${prog.blocksUpserted ?? 0}`
+			});
+			statusDiv.createEl('p', {
+				text: `Embeddings upserted: ${prog.embeddingsUpserted ?? 0}`
+			});
+			statusDiv.createEl('p', {
+				text: `Errors: ${prog.errors ?? 0}`
+			});
+			statusDiv.createEl('p', {
+				text: `Last file processed: ${prog.lastFile ?? ''}`
+			});
+
 			if (prog.status === 'complete' && prog.completedAt) {
 				statusDiv.createEl('p', {
 					text: `Completed: ${new Date(prog.completedAt).toLocaleString()}`
