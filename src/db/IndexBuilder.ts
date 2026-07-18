@@ -120,7 +120,9 @@ export class IndexBuilder {
 
       const filePath = ajsonFiles[i];
       if (!filePath) continue;
-      console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
+      if (i === 0 || i % 10 === 0 || i === ajsonFiles.length - 1) {
+        console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
+      }
 
       try {
         const raw = fs.readFileSync(filePath, 'utf8');
@@ -216,7 +218,6 @@ export class IndexBuilder {
       rawDb.exec("BEGIN TRANSACTION;");
       for (const source of batch) {
         try {
-          console.log(`[IndexBuilder] Upserting source`, source.path);
           selectHash.bind({ $path: source.path });
           let existing: { hash: string | null } | undefined;
           if (selectHash.step()) {
@@ -226,9 +227,6 @@ export class IndexBuilder {
 
           if (!forceRebuild && existing && existing.hash === source.hash && source.hash !== "") {
             result.sourcesSkipped++;
-            if (this.enableDebugLogging) {
-              console.log(`${LOG_PREFIX} Source unchanged, skipping: ${source.path}`);
-            }
             continue;
           }
 
@@ -244,11 +242,9 @@ export class IndexBuilder {
           if (!existing) {
             insertSource.run(rowParams);
             result.sourcesInserted++;
-            console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
           } else {
             updateSource.run(rowParams);
             result.sourcesUpdated++;
-            console.log(`${LOG_PREFIX} Updated source: ${source.path}`);
           }
 
           // Write embeddings
@@ -280,6 +276,8 @@ export class IndexBuilder {
         batchSize: batch.length
       });
     }
+
+    console.log(`${LOG_PREFIX} upsertSources complete`, { inserted: result.sourcesInserted, updated: result.sourcesUpdated, skipped: result.sourcesSkipped });
 
     selectHash.free();
     insertSource.free();
@@ -378,9 +376,6 @@ export class IndexBuilder {
               const storedEmbedHash = storedRaw?.last_embed?.hash ?? '';
               if (storedEmbedHash === block.embedHash && block.embedHash !== '') {
                 result.blocksSkipped++;
-                if (this.enableDebugLogging) {
-                  console.log(`${LOG_PREFIX} Block embed hash unchanged, skipping: ${block.blockKey}`);
-                }
                 continue;
               }
             } catch (e) {
@@ -404,15 +399,9 @@ export class IndexBuilder {
           if (!existing) {
             insertBlock.run(rowParams);
             result.blocksInserted++;
-            if (this.enableDebugLogging) {
-              console.log(`${LOG_PREFIX} Inserted block: ${block.blockKey}`);
-            }
           } else {
             updateBlock.run(rowParams);
             result.blocksUpdated++;
-            if (this.enableDebugLogging) {
-              console.log(`${LOG_PREFIX} Updated block: ${block.blockKey}`);
-            }
           }
 
           // Write embeddings
@@ -435,6 +424,8 @@ export class IndexBuilder {
         batchSize: batch.length
       });
     }
+
+    console.log(`${LOG_PREFIX} upsertBlocks complete`, { inserted: result.blocksInserted, updated: result.blocksUpdated, skipped: result.blocksSkipped });
 
     selectBlockHash.free();
     selectSourceId.free();
@@ -473,9 +464,9 @@ export class IndexBuilder {
         embedding    = excluded.embedding
     `);
 
+    console.log(`${LOG_PREFIX} upsertEmbeddings start`, { count: embeddings.length, ownerType, ownerId });
     let written = 0;
     for (const emb of embeddings) {
-      console.log(`[IndexBuilder] inserting embeddings batch`, { batchSize: embeddings.length, modelName: emb.modelName });
       try {
         const { blob, norm, isNormalized } = this.packEmbedding(emb.vec);
 
@@ -491,12 +482,6 @@ export class IndexBuilder {
         });
 
         written++;
-
-        if (this.enableDebugLogging) {
-          console.log(
-            `${LOG_PREFIX} Upserted embedding owner_type=${ownerType} owner_id=${ownerId} model=${emb.modelName} dim=${emb.dim} norm=${norm.toFixed(6)} is_normalized=${isNormalized}`
-          );
-        }
       } catch (e) {
         console.error(
           `${LOG_PREFIX} Failed to upsert embedding owner_type=${ownerType} owner_id=${ownerId} model=${emb.modelName}: ${String(e)}`
@@ -505,6 +490,8 @@ export class IndexBuilder {
     }
 
     upsertEmb.free();
+
+    console.log(`${LOG_PREFIX} upsertEmbeddings done`, { written });
 
     return written;
   }
@@ -552,11 +539,6 @@ export class IndexBuilder {
         });
         written++;
 
-        if (this.enableDebugLogging) {
-          console.log(
-            `${LOG_PREFIX} Wikilink: src_id=${srcSourceId} → dst=${dstPath} resolved=${!!dstRow}`
-          );
-        }
       } catch (e) {
         console.error(
           `${LOG_PREFIX} Failed to insert wikilink src_id=${srcSourceId} dst=${dstPath}: ${String(e)}`
