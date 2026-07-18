@@ -312,210 +312,252 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		void this.refreshIndexStatus(this.containerEl, this.containerEl.querySelector('.vre-index-status') as HTMLElement);
 	}
 
-	private readStatusArtifacts(): {
-		progressPath: string;
-		dbPath: string;
-		progressExists: boolean;
-		dbExists: boolean;
-		progressMtimeMs: number | null;
-		dbMtimeMs: number | null;
-		dbSize: number | null;
-		prog: any | null;
-		error: string | null;
-	} {
+	private async refreshIndexStatus(containerEl: HTMLElement, statusDiv?: HTMLElement): Promise<void> {
 		const fs = require('fs');
 		const path = require('path');
 
+		console.log('[SettingTab] refreshIndexStatus start');
+
+		if (!statusDiv) {
+		  console.log('[SettingTab] refreshIndexStatus aborted: missing statusDiv');
+		  return;
+		}
+
+		this.clearIndexStatusTimer();
+		statusDiv.empty();
+
+		const pluginDir = this.getPluginDir();
+		const progressFile = path.join(pluginDir, 'index-progress.json');
+		const dbPath = path.join(pluginDir, 'data', 'smart_index.db');
+
+		console.log('[SettingTab] refreshIndexStatus reading:', progressFile);
+
+		let progressExists = false;
+		let dbExists = false;
+		let progressMtimeMs: number | null = null;
+		let dbMtimeMs: number | null = null;
+		let dbSize: number | null = null;
+
 		try {
-		  const pluginDir = this.getPluginDir();
-		  const progressPath = path.join(pluginDir, 'index-progress.json');
-		  const dbPath = path.join(pluginDir, 'data', 'smart_index.db');
-
-		  const progressExists = fs.existsSync(progressPath);
-		  const dbExists = fs.existsSync(dbPath);
-
-		  let progressMtimeMs: number | null = null;
-		  let dbMtimeMs: number | null = null;
-		  let dbSize: number | null = null;
-		  let prog: any | null = null;
+		  progressExists = fs.existsSync(progressFile);
+		  dbExists = fs.existsSync(dbPath);
 
 		  if (progressExists) {
-			const stat = fs.statSync(progressPath);
+			const stat = fs.statSync(progressFile);
 			progressMtimeMs = stat.mtimeMs;
-			prog = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
 		  }
 
 		  if (dbExists) {
-			const dbStat = fs.statSync(dbPath);
-			dbMtimeMs = dbStat.mtimeMs;
-			dbSize = dbStat.size;
+			const stat = fs.statSync(dbPath);
+			dbMtimeMs = stat.mtimeMs;
+			dbSize = stat.size;
 		  }
 
 		  console.log('[SettingTab] readStatusArtifacts', {
-			progressPath,
+			progressPath: progressFile,
 			dbPath,
 			progressExists,
 			dbExists,
 			progressMtimeMs,
 			dbMtimeMs,
 			dbSize,
-			status: prog?.status,
-			processedFiles: prog?.processedFiles,
-			totalFiles: prog?.totalFiles,
+		  });
+		} catch (e) {
+		  console.error('[SettingTab] failed reading artifact stats', e);
+		  statusDiv.createEl('p', { text: 'Could not read index status artifacts.' });
+		  return;
+		}
+
+		if (!progressExists) {
+		  statusDiv.createEl('p', {
+			text: dbExists
+			  ? 'Status: IDLE'
+			  : 'Status: MISSING',
+		  });
+		  statusDiv.createEl('p', {
+			text: dbExists
+			  ? 'Reason: Database exists but no progress file is present.'
+			  : 'Reason: No index run yet. Run the external indexer script.',
+		  });
+		  if (dbExists && dbMtimeMs) {
+			statusDiv.createEl('p', {
+			  text: `Database updated: ${new Date(dbMtimeMs).toLocaleString()}`,
+			});
+		  }
+		  return;
+		}
+
+		try {
+		  const raw = fs.readFileSync(progressFile, 'utf8');
+		  const prog = JSON.parse(raw) as {
+			status: string;
+			startedAt?: number | null;
+			heartbeatAt?: number | null;
+			existingSources?: number;
+			totalFiles: number;
+			processedFiles?: number;
+			filesProcessed?: number;
+			sourcesInserted?: number;
+			sourcesUpdated?: number;
+			sourcesDeleted?: number;
+			blocksUpserted?: number;
+			embeddingsUpserted?: number;
+			errors?: number;
+			lastFile?: string;
+			completedAt?: number | null;
+			error?: string | null;
+			exitCode?: number | null;
+			pid?: number | null;
+		  };
+
+		  const processedFiles = prog.processedFiles ?? prog.filesProcessed ?? 0;
+		  const totalFiles = prog.totalFiles ?? 0;
+		  const heartbeatAt = prog.heartbeatAt ?? null;
+		  const completedAt = prog.completedAt ?? null;
+		  const explicitError = prog.error ?? null;
+
+		  const now = Date.now();
+		  const lastSignalAt =
+			typeof heartbeatAt === 'number'
+			  ? heartbeatAt
+			  : progressMtimeMs;
+
+		  const staleThresholdMs = 10 * 60 * 1000;
+		  const isProgressStale =
+			typeof lastSignalAt === 'number'
+			  ? now - lastSignalAt > staleThresholdMs
+			  : true;
+
+		  let derivedStatus = 'IDLE';
+		  let reason = 'No active indexing signal detected.';
+
+		  if (explicitError) {
+			derivedStatus = 'BROKEN';
+			reason = `Progress file reports error: ${explicitError}`;
+		  } else if (
+			prog.status === 'complete' ||
+			!!completedAt ||
+			(totalFiles > 0 && processedFiles >= totalFiles)
+		  ) {
+			derivedStatus = 'COMPLETE';
+			reason = 'Progress indicates all files were processed.';
+		  } else if (prog.status === 'running') {
+			if (!isProgressStale) {
+			  derivedStatus = 'RUNNING';
+			  reason = 'Progress heartbeat is recent.';
+			} else if (
+			  typeof dbMtimeMs === 'number' &&
+			  typeof progressMtimeMs === 'number' &&
+			  dbMtimeMs > progressMtimeMs
+			) {
+			  derivedStatus = 'SOFT_STALLED';
+			  reason = 'Progress file is stale, but database changed afterwards. Progress reporting likely stopped first.';
+			} else {
+			  derivedStatus = 'STALLED';
+			  reason = 'Progress file still says running, but heartbeat/progress timestamp is stale.';
+			}
+		  } else if (!progressExists && dbExists) {
+			derivedStatus = 'IDLE';
+			reason = 'Database exists but no progress file is present.';
+		  } else if (!progressExists && !dbExists) {
+			derivedStatus = 'MISSING';
+			reason = 'No progress file and no database found.';
+		  }
+
+		  console.log('[SettingTab] refreshIndexStatus classification', {
+			derived: { state: derivedStatus, reason },
+			prog,
 		  });
 
-		  return {
-			progressPath,
-			dbPath,
-			progressExists,
-			dbExists,
-			progressMtimeMs,
-			dbMtimeMs,
-			dbSize,
-			prog,
-			error: null,
-		  };
+		  statusDiv.createEl('p', { text: `Status: ${derivedStatus}` });
+		  statusDiv.createEl('p', { text: `Reason: ${reason}` });
+		  statusDiv.createEl('p', { text: `Existing DB sources: ${prog.existingSources ?? 0}` });
+		  statusDiv.createEl('p', { text: `Files discovered: ${totalFiles}` });
+		  statusDiv.createEl('p', { text: `Files processed: ${processedFiles}` });
+		  statusDiv.createEl('p', { text: `Sources inserted: ${prog.sourcesInserted ?? 0}` });
+		  statusDiv.createEl('p', { text: `Sources updated: ${prog.sourcesUpdated ?? 0}` });
+		  statusDiv.createEl('p', { text: `Sources deleted: ${prog.sourcesDeleted ?? 0}` });
+		  statusDiv.createEl('p', { text: `Blocks upserted: ${prog.blocksUpserted ?? 0}` });
+		  statusDiv.createEl('p', { text: `Embeddings upserted: ${prog.embeddingsUpserted ?? 0}` });
+		  statusDiv.createEl('p', { text: `Errors: ${prog.errors ?? 0}` });
+		  statusDiv.createEl('p', { text: `Last file processed: ${prog.lastFile ?? ''}` });
+
+		  if (prog.startedAt) {
+			statusDiv.createEl('p', {
+			  text: `Started: ${new Date(prog.startedAt).toLocaleString()}`,
+			});
+		  }
+
+		  if (heartbeatAt) {
+			statusDiv.createEl('p', {
+			  text: `Heartbeat: ${new Date(heartbeatAt).toLocaleString()}`,
+			});
+		  }
+
+		  if (progressMtimeMs) {
+			statusDiv.createEl('p', {
+			  text: `Progress updated: ${new Date(progressMtimeMs).toLocaleString()}`,
+			});
+		  }
+
+		  if (dbMtimeMs) {
+			statusDiv.createEl('p', {
+			  text: `Database updated: ${new Date(dbMtimeMs).toLocaleString()}`,
+			});
+		  }
+
+		  if (typeof dbSize === 'number') {
+			statusDiv.createEl('p', {
+			  text: `Database size: ${dbSize.toLocaleString()} bytes`,
+			});
+		  }
+
+		  if (completedAt) {
+			statusDiv.createEl('p', {
+			  text: `Completed: ${new Date(completedAt).toLocaleString()}`,
+			});
+		  }
+
+		  if (prog.pid) {
+			statusDiv.createEl('p', {
+			  text: `Indexer PID: ${prog.pid}`,
+			});
+		  }
+
+		  if (prog.exitCode !== undefined && prog.exitCode !== null) {
+			statusDiv.createEl('p', {
+			  text: `Exit code: ${prog.exitCode}`,
+			});
+		  }
+
+		  if (explicitError) {
+			statusDiv.createEl('p', {
+			  text: `Error: ${explicitError}`,
+			  cls: 'vre-error',
+			});
+		  }
+
+		  if (derivedStatus === 'RUNNING' || derivedStatus === 'SOFT_STALLED') {
+			this.indexStatusTimer = window.setTimeout(() => {
+			  console.log('[SettingTab] scheduleIndexStatusRefresh firing');
+			  this.indexStatusTimer = null;
+			  void this.refreshIndexStatus(containerEl, statusDiv);
+			}, 2000);
+
+			console.log('[SettingTab] scheduleIndexStatusRefresh set', {
+			  timer: this.indexStatusTimer,
+			  state: derivedStatus,
+			});
+		  } else {
+			console.log('[SettingTab] refreshIndexStatus not scheduling further polling', {
+			  state: derivedStatus,
+			});
+		  }
 		} catch (e) {
-		  console.error('[SettingTab] readStatusArtifacts error', e);
-		  return {
-			progressPath: '',
-			dbPath: '',
-			progressExists: false,
-			dbExists: false,
-			progressMtimeMs: null,
-			dbMtimeMs: null,
-			dbSize: null,
-			prog: null,
-			error: e instanceof Error ? e.message : String(e),
-		  };
+		  console.error('[SettingTab] failed to parse progress file:', e);
+		  statusDiv.createEl('p', { text: 'Could not read index status file.' });
 		}
-	}
-
-	private classifyIndexStatus(artifacts: {
-		progressExists: boolean;
-		dbExists: boolean;
-		progressMtimeMs: number | null;
-		dbMtimeMs: number | null;
-		prog: any | null;
-		error: string | null;
-	}): { state: string; reason: string } {
-		if (artifacts.error) {
-			return { state: 'BROKEN', reason: `Failed reading status artifacts: ${artifacts.error}` };
-		}
-
-		if (!artifacts.progressExists && !artifacts.dbExists) {
-			return { state: 'MISSING', reason: 'No progress file and no database found.' };
-		}
-
-		if (!artifacts.progressExists && artifacts.dbExists) {
-			return { state: 'IDLE', reason: 'Database exists but no progress file is present.' };
-		}
-
-		const prog = artifacts.prog ?? {};
-		const now = Date.now();
-		const heartbeatAt = prog.heartbeatAt ?? null;
-		const completedAt = prog.completedAt ?? null;
-		const processedFiles = prog.processedFiles ?? 0;
-		const totalFiles = prog.totalFiles ?? 0;
-		const explicitError = prog.error ?? null;
-
-		const lastSignalAt =
-			typeof heartbeatAt === 'number'
-				? heartbeatAt
-				: artifacts.progressMtimeMs;
-
-		const staleMs = 3 * 60 * 1000;
-		const stale = typeof lastSignalAt === 'number' ? now - lastSignalAt > staleMs : true;
-
-		if (explicitError) {
-			return { state: 'BROKEN', reason: `Progress file reports error: ${explicitError}` };
-		}
-
-		if (prog.status === 'complete' || completedAt || (totalFiles > 0 && processedFiles >= totalFiles)) {
-			return { state: 'COMPLETE', reason: 'Progress indicates all files were processed.' };
-		}
-
-		if (prog.status === 'running') {
-			if (!stale) {
-				return { state: 'RUNNING', reason: 'Progress heartbeat is recent.' };
-			}
-
-			if (
-				typeof artifacts.dbMtimeMs === 'number' &&
-				typeof artifacts.progressMtimeMs === 'number' &&
-				artifacts.dbMtimeMs > artifacts.progressMtimeMs
-			) {
-				return {
-					state: 'STALLED',
-					reason: 'Progress file is stale, but database changed afterwards. Progress reporting likely stopped first.',
-				};
-			}
-
-			return {
-				state: 'STALLED',
-				reason: 'Progress file still says running, but heartbeat/progress timestamp is stale.',
-			};
-		}
-
-		return { state: 'IDLE', reason: 'No active indexing signal detected.' };
-	}
-
-	private async refreshIndexStatus(containerEl: HTMLElement, statusDiv?: HTMLElement): Promise<void> {
-		console.log('[SettingTab] refreshIndexStatus start');
-		if (!statusDiv) return;
-		statusDiv.empty();
-
-		const artifacts = this.readStatusArtifacts();
-
-		if (artifacts.error) {
-			statusDiv.createEl('p', { text: `Status: BROKEN` });
-			statusDiv.createEl('p', { text: `Reason: ${artifacts.error}` });
-			console.error('[SettingTab] refreshIndexStatus readError', artifacts.error);
-			return;
-		}
-
-		const derived = this.classifyIndexStatus(artifacts);
-		const prog = artifacts.prog ?? {};
-
-		console.log('[SettingTab] refreshIndexStatus classification', { derived, prog });
-
-		statusDiv.createEl('p', { text: `Status: ${derived.state}` });
-		statusDiv.createEl('p', { text: `Reason: ${derived.reason}` });
-		statusDiv.createEl('p', { text: `Existing DB sources: ${prog.existingSources ?? 0}` });
-		statusDiv.createEl('p', { text: `Files discovered: ${prog.totalFiles ?? 0}` });
-		statusDiv.createEl('p', { text: `Files processed: ${prog.processedFiles ?? 0}` });
-		statusDiv.createEl('p', { text: `Sources inserted: ${prog.sourcesInserted ?? 0}` });
-		statusDiv.createEl('p', { text: `Sources updated: ${prog.sourcesUpdated ?? 0}` });
-		statusDiv.createEl('p', { text: `Sources deleted: ${prog.sourcesDeleted ?? 0}` });
-		statusDiv.createEl('p', { text: `Blocks upserted: ${prog.blocksUpserted ?? 0}` });
-		statusDiv.createEl('p', { text: `Embeddings upserted: ${prog.embeddingsUpserted ?? 0}` });
-		statusDiv.createEl('p', { text: `Errors: ${prog.errors ?? 0}` });
-		statusDiv.createEl('p', { text: `Last file processed: ${prog.lastFile ?? ''}` });
-		statusDiv.createEl('p', { text: `Progress updated: ${artifacts.progressMtimeMs ? new Date(artifacts.progressMtimeMs).toLocaleString() : 'n/a'}` });
-		statusDiv.createEl('p', { text: `Database updated: ${artifacts.dbMtimeMs ? new Date(artifacts.dbMtimeMs).toLocaleString() : 'n/a'}` });
-
-		if (derived.state === 'RUNNING') {
-			this.scheduleIndexStatusRefresh(statusDiv);
-		} else {
-			this.clearIndexStatusTimer();
-			console.log('[SettingTab] refreshIndexStatus not scheduling further polling', { state: derived.state });
-		}
-	}
-
-	private scheduleIndexStatusRefresh(statusDiv: HTMLElement): void {
-		if (this.indexStatusTimer !== null) {
-			console.log('[SettingTab] scheduleIndexStatusRefresh skipped: timer already active');
-			return;
-		}
-
-		this.indexStatusTimer = window.setTimeout(() => {
-			console.log('[SettingTab] scheduleIndexStatusRefresh firing');
-			this.indexStatusTimer = null;
-			void this.refreshIndexStatus(this.containerEl, statusDiv);
-		}, 2000);
-
-		console.log('[SettingTab] scheduleIndexStatusRefresh set', { timer: this.indexStatusTimer });
-	}
+	  }
 
 	private clearIndexStatusTimer(): void {
 		if (this.indexStatusTimer !== null) {
