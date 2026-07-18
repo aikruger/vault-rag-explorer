@@ -46,6 +46,31 @@ export class IndexBuilder {
   }
 
   // ---------------------------------------------------------------------------
+  // File metadata indexing
+  // ---------------------------------------------------------------------------
+
+  private getIndexedFileMtime(rawDb: SqlJsDatabase, filePath: string): number | null {
+    try {
+      // We'll store per-file mtime in a new index_meta table
+      const res = rawDb.exec(
+        `SELECT mtime FROM index_file_meta WHERE filepath = '${filePath.replace(/'/g, "''")}'`
+      );
+      const val = res?.[0]?.values?.[0]?.[0];
+      return typeof val === 'number' ? val : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private setIndexedFileMtime(rawDb: SqlJsDatabase, filePath: string, mtime: number): void {
+    rawDb.exec(
+      `INSERT OR REPLACE INTO index_file_meta (filepath, mtime)
+       VALUES ('${filePath.replace(/'/g, "''")}', ${mtime})`
+    );
+    console.log(`[IndexBuilder] setIndexedFileMtime`, { filePath, mtime });
+  }
+
+  // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
 
@@ -120,11 +145,21 @@ export class IndexBuilder {
 
       const filePath = ajsonFiles[i];
       if (!filePath) continue;
-      if (i === 0 || i % 10 === 0 || i === ajsonFiles.length - 1) {
-        console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
-      }
 
       try {
+        const fileStat = fs.statSync(filePath);
+        const fileMtime = fileStat.mtimeMs;
+        const storedMtime = this.getIndexedFileMtime(rawDb, filePath);
+
+        if (storedMtime !== null && storedMtime === fileMtime) {
+          console.log(`[IndexBuilder] file unchanged (mtime match), skipping: ${filePath}`);
+          continue;  // skip parsing entirely
+        }
+
+        if (i === 0 || i % 10 === 0 || i === ajsonFiles.length - 1) {
+          console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
+        }
+
         const raw = fs.readFileSync(filePath, 'utf8');
         const parsed = parser.parseContent(raw, filePath);
 
@@ -145,6 +180,7 @@ export class IndexBuilder {
         totalEmbeddings += resultDummy.embeddingsWritten; // using upsert return logic implicitly via result dummy
         // Note: totalEmbeddings tracks *written* embeddings based on actual upsert
 
+        this.setIndexedFileMtime(rawDb, filePath, fileMtime);
       } catch (err) {
         parseErrors++;
         console.error('[IndexBuilder] error processing file:', filePath, err);

@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS rag_sessions (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS index_file_meta (
+  filepath TEXT PRIMARY KEY,
+  mtime    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sources_path ON sources(path);
 CREATE INDEX IF NOT EXISTS idx_blocks_source_id ON blocks(source_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_owner ON embeddings(owner_type, model_name, owner_id);
