@@ -65,56 +65,127 @@ db.exec(`
   PRAGMA synchronous  = NORMAL;
 
   CREATE TABLE IF NOT EXISTS sources (
-    id       TEXT PRIMARY KEY,
-    filepath TEXT NOT NULL,
-    mtime    INTEGER,
-    size     INTEGER
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL UNIQUE,
+    title TEXT,
+    metadata_json TEXT,
+    raw_json TEXT,
+    mtime INTEGER,
+    hash TEXT
   );
 
   CREATE TABLE IF NOT EXISTS blocks (
-    id       TEXT PRIMARY KEY,
-    sourceid TEXT NOT NULL,
-    blockkey TEXT,
-    content  TEXT,
-    FOREIGN KEY (sourceid) REFERENCES sources(id)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    block_key TEXT NOT NULL UNIQUE,
+    block_path TEXT,
+    block_label TEXT,
+    line_start INTEGER,
+    line_end INTEGER,
+    text TEXT,
+    text_length INTEGER,
+    hash TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT,
+    raw_json TEXT,
+    FOREIGN KEY(source_id) REFERENCES sources(id)
   );
 
   CREATE TABLE IF NOT EXISTS embeddings (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    ownertype TEXT NOT NULL,
-    ownerid   TEXT NOT NULL,
-    modelname TEXT NOT NULL,
-    dim       INTEGER NOT NULL,
-    vector    TEXT NOT NULL
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_type TEXT NOT NULL,
+    owner_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    dtype TEXT NOT NULL,
+    norm REAL NOT NULL,
+    is_normalized INTEGER NOT NULL,
+    embedding BLOB NOT NULL,
+    UNIQUE(owner_type, owner_id, model_name)
   );
 
   CREATE TABLE IF NOT EXISTS wikilinks (
-    fromid TEXT,
-    toid   TEXT
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_source_id INTEGER NOT NULL,
+    dst_path TEXT NOT NULL,
+    dst_source_id INTEGER,
+    anchor_text TEXT,
+    line_no INTEGER,
+    edge_type TEXT NOT NULL,
+    FOREIGN KEY(src_source_id) REFERENCES sources(id)
   );
 
   CREATE TABLE IF NOT EXISTS rag_sessions (
-    id      TEXT PRIMARY KEY,
-    data    TEXT,
-    created INTEGER
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    query_text TEXT NOT NULL,
+    query_embedding_model TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    workspace_json TEXT NOT NULL,
+    explanations_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS index_file_meta (
+    filepath TEXT PRIMARY KEY,
+    mtime    INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sources_path ON sources(path);
+  CREATE INDEX IF NOT EXISTS idx_blocks_source_id ON blocks(source_id);
+  CREATE INDEX IF NOT EXISTS idx_embeddings_owner ON embeddings(owner_type, model_name, owner_id);
+  CREATE INDEX IF NOT EXISTS idx_wikilinks_src ON wikilinks(src_source_id);
+  CREATE INDEX IF NOT EXISTS idx_wikilinks_dst ON wikilinks(dst_source_id);
 `);
 
-console.log('[indexer] schema created (5 tables)');
+console.log('[indexer] schema created (6 tables)');
 
 // ── PREPARED STATEMENTS ──────────────────────────────────────────────────────
 const insertSource = db.prepare(
-  `INSERT OR REPLACE INTO sources (id, filepath, mtime, size)
-   VALUES (?, ?, ?, ?)`
+  `INSERT INTO sources (path, title, metadata_json, raw_json, mtime, hash)
+   VALUES (?, ?, ?, ?, ?, ?)
+   ON CONFLICT(path) DO UPDATE SET
+     title=excluded.title,
+     metadata_json=excluded.metadata_json,
+     raw_json=excluded.raw_json,
+     mtime=excluded.mtime,
+     hash=excluded.hash
+   RETURNING id`
 );
 const insertBlock = db.prepare(
-  `INSERT OR REPLACE INTO blocks (id, sourceid, blockkey, content)
-   VALUES (?, ?, ?, ?)`
+  `INSERT INTO blocks (source_id, block_key, block_path, block_label, line_start, line_end, text, text_length, metadata_json, raw_json)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(block_key) DO UPDATE SET
+     source_id=excluded.source_id,
+     block_path=excluded.block_path,
+     block_label=excluded.block_label,
+     line_start=excluded.line_start,
+     line_end=excluded.line_end,
+     text=excluded.text,
+     text_length=excluded.text_length,
+     metadata_json=excluded.metadata_json,
+     raw_json=excluded.raw_json
+   RETURNING id`
 );
 const insertEmbedding = db.prepare(
-  `INSERT INTO embeddings (ownertype, ownerid, modelname, dim, vector)
-   VALUES (?, ?, ?, ?, ?)`
+  `INSERT INTO embeddings (owner_type, owner_id, model_name, dim, dtype, norm, is_normalized, embedding)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(owner_type, owner_id, model_name) DO UPDATE SET
+     dim=excluded.dim,
+     dtype=excluded.dtype,
+     norm=excluded.norm,
+     is_normalized=excluded.is_normalized,
+     embedding=excluded.embedding`
 );
+const setIndexedFileMtime = db.prepare(
+  `INSERT OR REPLACE INTO index_file_meta (filepath, mtime) VALUES (?, ?)`
+);
+const getIndexedFileMtime = db.prepare(
+  `SELECT mtime FROM index_file_meta WHERE filepath = ?`
+);
+
+const getSourceId = db.prepare(`SELECT id FROM sources WHERE path = ?`);
+const getBlockId = db.prepare(`SELECT id FROM blocks WHERE block_key = ?`);
 
 // ── PARSE AND INSERT ─────────────────────────────────────────────────────────
 let totalSources    = 0;
@@ -126,12 +197,27 @@ let totalErrors     = 0;
 db.exec('BEGIN');
 
 try {
+  let i = 0;
   for (const filePath of ajsonFiles) {
-    const fileName = path.basename(filePath);
+    console.log(`[indexer] progress file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
+    i++;
+
+    const fileStat = fs.statSync(filePath);
+    const fileMtime = fileStat.mtimeMs;
+
+    let storedMtime = null;
+    try {
+      const row = getIndexedFileMtime.get(filePath);
+      if (row) storedMtime = row.mtime;
+    } catch(e) {}
+
+    if (storedMtime !== null && storedMtime === fileMtime) {
+      console.log(`[indexer] file unchanged (mtime match), skipping: ${filePath}`);
+      continue;
+    }
+
     const raw = fs.readFileSync(filePath, 'utf8');
     const lines = raw.split('\n').filter(l => l.trim().length > 0);
-
-    console.log(`[indexer] ${fileName} — ${lines.length} lines`);
 
     for (const line of lines) {
       // SC .ajson format: "key": {json object}
@@ -154,23 +240,57 @@ try {
         continue;
       }
 
-      console.log(`[indexer]   record key=${key}, top-level keys=${Object.keys(record).join(',')}`);
-
       // ── Source record (no '#' in key = file-level)
-      if (!key.includes('#')) {
-        insertSource.run(key, key, record.mtime ?? null, record.size ?? null);
+      let ownerId = null;
+      let ownerType = key.includes('#') ? 'block' : 'source';
+
+      if (ownerType === 'source') {
+        const res = insertSource.get(
+          key, // path
+          record.title || record.name || null, // title
+          JSON.stringify(record.metadata || {}), // metadata_json
+          jsonPart, // raw_json
+          record.mtime ?? null, // mtime
+          record.hash || null // hash
+        );
+        if (res) ownerId = res.id;
         totalSources++;
       } else {
         // ── Block record (has '#' separator)
-        const sourceId = key.split('#')[0];
-        insertBlock.run(key, sourceId, key, record.content ?? record.text ?? null);
+        const sourcePath = key.split('#')[0];
+
+        // Find source_id
+        let sourceId = null;
+        try {
+           const row = getSourceId.get(sourcePath);
+           if (row) sourceId = row.id;
+        } catch(e){}
+
+        if (!sourceId) {
+          console.warn(`[indexer]   skipping block ${key} - source not found`);
+          continue;
+        }
+
+        const content = record.content ?? record.text ?? "";
+
+        const res = insertBlock.get(
+          sourceId, // source_id
+          key, // block_key
+          sourcePath, // block_path
+          record.label || null, // block_label
+          record.line_start || null, // line_start
+          record.line_end || null, // line_end
+          content, // text
+          content.length, // text_length
+          JSON.stringify(record.metadata || {}), // metadata_json
+          jsonPart // raw_json
+        );
+        if (res) ownerId = res.id;
         totalBlocks++;
       }
 
       // ── Embeddings — iterate over model keys inside record.embeddings
       if (record.embeddings && typeof record.embeddings === 'object') {
-        console.log(`[indexer]   embedding model keys: ${Object.keys(record.embeddings).join(',')}`);
-
         for (const [modelName, modelData] of Object.entries(record.embeddings)) {
           const vec = modelData?.vec ?? modelData?.vector ?? null;
 
@@ -179,14 +299,35 @@ try {
             continue;
           }
 
-          const ownerType = key.includes('#') ? 'block' : 'source';
-          insertEmbedding.run(ownerType, key, modelName, vec.length, JSON.stringify(vec));
+          if (!ownerId) {
+             console.warn(`[indexer]   WARNING: owner not found for embedding key "${key}"`);
+             continue;
+          }
+
+          // pack embedding to blob
+          const arr = new Float32Array(vec);
+          let sumSq = 0;
+          for (let k = 0; k < arr.length; k++) sumSq += (arr[k] || 0) * (arr[k] || 0);
+          const norm = Math.sqrt(sumSq);
+          const isNormalized = Math.abs(norm - 1.0) < 1e-4;
+          const blob = Buffer.from(arr.buffer);
+
+          insertEmbedding.run(
+            ownerType,
+            ownerId,
+            modelName,
+            vec.length, // dim
+            "float32", // dtype
+            norm, // norm
+            isNormalized ? 1 : 0, // is_normalized
+            blob // embedding
+          );
           totalEmbeddings++;
         }
-      } else {
-        console.log(`[indexer]   no embeddings field on this record`);
       }
     }
+
+    setIndexedFileMtime.run(filePath, fileMtime);
   }
 
   db.exec('COMMIT');
