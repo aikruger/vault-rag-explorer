@@ -55,10 +55,8 @@ export class AjsonWatcherService {
         ajsonFolderPath,
         { persistent: false },
         (eventType: string, filename: string | null) => {
-          console.log(`${LOG} fs.watch event — type:${eventType} file:${filename ?? "null"}`);
-
-          if (!filename) return;
-          if (!filename.endsWith(".ajson")) return;
+          if (!filename || !filename.endsWith(".ajson")) return;
+          console.log(`${LOG} .ajson change detected: ${filename}`);
 
           const fullPath = path.join(ajsonFolderPath, filename);
           this.scheduleReindex(fullPath);
@@ -115,9 +113,6 @@ export class AjsonWatcherService {
 
   private scheduleDrain(): void {
     if (this.plugin.reindexDrainScheduled) {
-      console.log(`${LOG} scheduleDrain skipped — already scheduled`, {
-        pendingCount: this.plugin.pendingAjsonReindex.size,
-      });
       return;
     }
 
@@ -177,7 +172,6 @@ export class AjsonWatcherService {
     const existing = this.debounceTimers.get(fullFilePath);
     if (existing) {
       clearTimeout(existing);
-      console.log(`${LOG} debounce reset for`, fullFilePath);
     }
 
     const timer = setTimeout(() => {
@@ -191,7 +185,6 @@ export class AjsonWatcherService {
     }, DEBOUNCE_MS);
 
     this.debounceTimers.set(fullFilePath, timer);
-    console.log(`${LOG} debounce scheduled (${DEBOUNCE_MS}ms) for`, fullFilePath);
   }
 
   /**
@@ -204,9 +197,28 @@ export class AjsonWatcherService {
 
     // If the file was deleted, remove orphan records from the DB
     if (!fs.existsSync(fullFilePath)) {
-      console.log(`${LOG} file no longer exists — running orphan cleanup for:`, fullFilePath);
+      console.log(`${LOG} file deleted — orphan cleanup:`, fullFilePath);
       await this.removeOrphansForFile(fullFilePath);
       return;
+    }
+
+    // Lightweight mtime guard — skip if file hasn't changed since last index
+    try {
+      const stat = fs.statSync(fullFilePath);
+      const rawDb = this.db.getDb();
+      if (rawDb) {
+        const res = rawDb.exec(
+          `SELECT mtime FROM index_file_meta WHERE filepath = '${fullFilePath.replace(/'/g, "''")}'`
+        );
+        const storedMtime = res?.[0]?.values?.[0]?.[0] as number | undefined;
+        if (storedMtime !== undefined && storedMtime === stat.mtimeMs) {
+          console.log(`${LOG} reindexFile skipped — mtime unchanged:`, fullFilePath);
+          return;
+        }
+        console.log(`${LOG} reindexFile proceeding — mtime changed from ${storedMtime} to ${stat.mtimeMs}`);
+      }
+    } catch (e) {
+      console.warn(`${LOG} mtime check failed, proceeding anyway:`, e);
     }
 
     try {
