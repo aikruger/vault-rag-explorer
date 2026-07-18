@@ -25,13 +25,16 @@ print(f"[run-indexer] db_path={db_path}")
 print(f"[run-indexer] node_script={node_script}")
 print(f"[run-indexer] existingSources={existing_sources}")
 
-# Write initial status
-progress_file.write_text(json.dumps({
+started_at = int(time.time() * 1000)
+
+progress = {
     "status": "running",
-    "startedAt": int(time.time() * 1000),
+    "startedAt": started_at,
+    "heartbeatAt": started_at,
+    "completedAt": None,
     "existingSources": existing_sources,
-    "totalFiles": 0,
     "processedFiles": 0,
+    "totalFiles": 0,
     "sourcesInserted": 0,
     "sourcesUpdated": 0,
     "sourcesDeleted": 0,
@@ -39,9 +42,12 @@ progress_file.write_text(json.dumps({
     "embeddingsUpserted": 0,
     "errors": 0,
     "lastFile": "",
-    "completedAt": None,
-    "error": None
-}))
+    "error": None,
+    "pid": None,
+    "exitCode": None,
+}
+progress_file.write_text(json.dumps(progress))
+print(f'[run-indexer] initial progress written: {progress}')
 print(f'[run-indexer] Progress file: {progress_file}')
 
 proc = subprocess.Popen(
@@ -50,55 +56,36 @@ proc = subprocess.Popen(
     text=True, bufsize=1
 )
 
+progress["pid"] = proc.pid
+progress["heartbeatAt"] = int(time.time() * 1000)
+progress_file.write_text(json.dumps(progress))
+print(f'[run-indexer] process started: pid={proc.pid}')
+
 for line in proc.stdout:
     line = line.rstrip()
     if line.startswith('[indexer-progress] '):
         try:
             payload = json.loads(line[len('[indexer-progress] '):])
 
-            # Default to 0 for missing fields
-            sources_inserted = payload.get('sourcesInserted', 0)
-            sources_updated = payload.get('sourcesUpdated', 0)
-            sources_deleted = payload.get('sourcesDeleted', 0)
-            blocks_upserted = payload.get('blocksUpserted', 0)
-            embeddings_upserted = payload.get('embeddingsUpserted', 0)
-            errors = payload.get('errors', 0)
+            progress["heartbeatAt"] = int(time.time() * 1000)
 
-            # Keep existing logic for backwards compatibility if needed
             if payload.get('phase') == 'start':
-               progress_file.write_text(json.dumps({
-                    "status": "running",
-                    "startedAt": int(time.time() * 1000),
-                    "existingSources": payload.get('existingSources', existing_sources),
-                    "totalFiles": payload.get('totalFiles', 0),
-                    "processedFiles": 0,
-                    "sourcesInserted": 0,
-                    "sourcesUpdated": 0,
-                    "sourcesDeleted": 0,
-                    "blocksUpserted": 0,
-                    "embeddingsUpserted": 0,
-                    "errors": 0,
-                    "lastFile": "",
-                    "completedAt": None,
-                    "error": None
-                }))
+                progress["totalFiles"] = payload.get('totalFiles', 0)
+                progress["existingSources"] = payload.get('existingSources', existing_sources)
             else:
-               progress_file.write_text(json.dumps({
-                    "status": "running" if payload.get('phase') != 'complete' else 'complete',
-                    "startedAt": int(time.time() * 1000),
-                    "existingSources": existing_sources, # Keeps initial count
-                    "totalFiles": payload.get('totalFiles', 0),
-                    "processedFiles": payload.get('processedFiles', 0),
-                    "sourcesInserted": sources_inserted,
-                    "sourcesUpdated": sources_updated,
-                    "sourcesDeleted": sources_deleted,
-                    "blocksUpserted": blocks_upserted,
-                    "embeddingsUpserted": embeddings_upserted,
-                    "errors": errors,
-                    "lastFile": payload.get('lastFile', ''),
-                    "completedAt": int(time.time() * 1000) if payload.get('phase') == 'complete' else None,
-                    "error": None
-                }))
+                progress["totalFiles"] = payload.get('totalFiles', progress["totalFiles"])
+                progress["processedFiles"] = payload.get('processedFiles', progress["processedFiles"])
+                progress["lastFile"] = payload.get('lastFile', progress["lastFile"])
+
+                progress["sourcesInserted"] = payload.get('sourcesInserted', progress["sourcesInserted"])
+                progress["sourcesUpdated"] = payload.get('sourcesUpdated', progress["sourcesUpdated"])
+                progress["sourcesDeleted"] = payload.get('sourcesDeleted', progress["sourcesDeleted"])
+                progress["blocksUpserted"] = payload.get('blocksUpserted', progress["blocksUpserted"])
+                progress["embeddingsUpserted"] = payload.get('embeddingsUpserted', progress["embeddingsUpserted"])
+                progress["errors"] = payload.get('errors', progress["errors"])
+
+            progress_file.write_text(json.dumps(progress))
+            print(f'[run-indexer] progress updated: files={progress["processedFiles"]}/{progress["totalFiles"]}')
         except Exception as e:
             print(f"[run-indexer] error parsing progress JSON: {e}")
             print(line)
@@ -106,31 +93,12 @@ for line in proc.stdout:
         print(line)  # pass through to terminal
 
 proc.wait()
-status = "complete" if proc.returncode == 0 else "error"
 
-# Only write error state if it didn't complete cleanly
-if status == 'error':
-    try:
-        current = json.loads(progress_file.read_text())
-        current['status'] = status
-        current['error'] = f"Exit code {proc.returncode}"
-        current['completedAt'] = int(time.time() * 1000)
-        progress_file.write_text(json.dumps(current))
-    except Exception:
-        progress_file.write_text(json.dumps({
-            "status": status,
-            "startedAt": int(time.time() * 1000),
-            "existingSources": existing_sources,
-            "totalFiles": 0,
-            "processedFiles": 0,
-            "sourcesInserted": 0,
-            "sourcesUpdated": 0,
-            "sourcesDeleted": 0,
-            "blocksUpserted": 0,
-            "embeddingsUpserted": 0,
-            "errors": 0,
-            "lastFile": "",
-            "completedAt": int(time.time() * 1000),
-            "error": f"Exit code {proc.returncode}"
-        }))
-print(f'[run-indexer] Done — status: {status}')
+progress["status"] = "complete" if proc.returncode == 0 else "error"
+progress["completedAt"] = int(time.time() * 1000)
+progress["heartbeatAt"] = progress["completedAt"]
+progress["exitCode"] = proc.returncode
+progress["error"] = None if proc.returncode == 0 else f"Exit code {proc.returncode}"
+progress_file.write_text(json.dumps(progress))
+print(f'[run-indexer] terminal progress written: {progress}')
+print(f'[run-indexer] Done — status: {progress["status"]}')
