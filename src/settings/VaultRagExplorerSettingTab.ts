@@ -51,44 +51,35 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			});
 
 		// ── Index Status ────────────────────────────────────────────────────────
-		const statusEl = containerEl.createEl('p', {
-			cls: 'setting-item-description',
-		});
-		this.renderIndexStatus(statusEl);
+		new Setting(containerEl)
+			.setName('Index status')
+			.setDesc('External indexer progress (run indexer/run-indexer.py from terminal)')
+			.addButton(btn => {
+				btn.setButtonText('Refresh status');
+				btn.onClick(() => {
+					void this.refreshIndexStatus(containerEl, statusDiv);
+				});
+			});
+
+		// Add a status div below:
+		const statusDiv = containerEl.createEl('div', { cls: 'vre-index-status' });
+		void this.refreshIndexStatus(containerEl, statusDiv);
 
 		// ── Build Button ────────────────────────────────────────────────────────
 		const buildSetting = new Setting(containerEl)
 			.setName('Build index')
 			.setDesc('Parse all Smart Connections embeddings and write to the local SQLite database.');
 
-		let buildBtn: ButtonComponent;
 		buildSetting.addButton(btn => {
-			buildBtn = btn;
-			btn.setButtonText('Build Index Now')
+			btn.setButtonText('Build Index (External)')
 				.setCta()
 				.onClick(async () => {
-					if (!this.plugin.settings.smartFolderPath) {
-						new Notice('Please set the Smart Connections folder path first.');
-						return;
-					}
-					btn.setButtonText('Building…').setDisabled(true);
-					statusEl.setText('Building index…');
-					console.log('[VaultRagSettings] starting index build');
-
-					try {
-						const result = await this.plugin.buildIndexFromSettings();
-						this.plugin.settings.lastIndexBuild = Date.now();
-						await this.plugin.saveSettings();
-						this.renderIndexStatus(statusEl);
-						btn.setButtonText('Build Index Now').setDisabled(false);
-						new Notice(`Index built: ${result.embeddings} embeddings from ${result.sources} sources`);
-						console.log('[VaultRagSettings] index build complete', result);
-					} catch (err) {
-						btn.setButtonText('Build Index Now').setDisabled(false);
-						statusEl.setText('Build failed — check console for details');
-						new Notice('Index build failed: ' + (err as Error).message);
-						console.error('[VaultRagSettings] index build failed', err);
-					}
+					const fs = require('fs');
+					const path = require('path');
+					const basePath = (this.plugin.app.vault.adapter as unknown as { basePath: string }).basePath;
+					const cmd = `python "${path.join(basePath, 'indexer', 'run-indexer.py')}" "${basePath}"`;
+					new Notice(`Run this in your terminal:\n${cmd}`, 15000);
+					console.log('[SettingTab] External indexer command:', cmd);
 				});
 		});
 
@@ -241,14 +232,53 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			});
 	}
 
-	private renderIndexStatus(el: HTMLElement): void {
-		const ts = this.plugin.settings.lastIndexBuild;
-		if (!ts) {
-			el.setText('Index not yet built.');
+	private async refreshIndexStatus(containerEl: HTMLElement, statusDiv?: HTMLElement): Promise<void> {
+		const fs = require('fs');
+		const path = require('path');
+		const basePath = (this.plugin.app.vault.adapter as unknown as { basePath: string }).basePath;
+		const progressFile = path.join(
+			basePath, '.obsidian', 'plugins', 'vault-rag-explorer', 'index-progress.json'
+		);
+		console.log('[SettingTab] refreshIndexStatus reading:', progressFile);
+
+		if (!statusDiv) return;
+		statusDiv.empty();
+
+		if (!fs.existsSync(progressFile)) {
+			statusDiv.createEl('p', { text: 'No index run yet. Run the external indexer script.' });
 			return;
 		}
-		const date = new Date(ts).toLocaleString();
-		el.setText(`Last built: ${date}`);
-		console.log('[VaultRagSettings] rendering status — lastBuild:', date);
+
+		try {
+			const raw = fs.readFileSync(progressFile, 'utf8');
+			const prog = JSON.parse(raw) as {
+				status: string; filesProcessed: number; totalFiles: number;
+				lastFile: string; completedAt: number | null; error: string | null;
+			};
+			console.log('[SettingTab] index progress:', prog);
+
+			statusDiv.createEl('p', {
+				text: `Status: ${prog.status.toUpperCase()}`
+			});
+			statusDiv.createEl('p', {
+				text: `Progress: ${prog.filesProcessed} / ${prog.totalFiles} files`
+			});
+			if (prog.status === 'complete' && prog.completedAt) {
+				statusDiv.createEl('p', {
+					text: `Completed: ${new Date(prog.completedAt).toLocaleString()}`
+				});
+			}
+			if (prog.error) {
+				statusDiv.createEl('p', { text: `Error: ${prog.error}`, cls: 'vre-error' });
+			}
+
+			// Auto-poll if still running
+			if (prog.status === 'running') {
+				window.setTimeout(() => void this.refreshIndexStatus(containerEl, statusDiv), 2000);
+			}
+		} catch (e) {
+			console.error('[SettingTab] failed to parse progress file:', e);
+			statusDiv.createEl('p', { text: 'Could not read index status file.' });
+		}
 	}
 }
