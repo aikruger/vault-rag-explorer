@@ -161,6 +161,7 @@ export class AjsonWatcherService {
     }
 
     try {
+      console.log('[checker] indexing started');
       const pending = Array.from(this.plugin.pendingAjsonReindex);
       this.plugin.pendingAjsonReindex.clear();
 
@@ -168,8 +169,25 @@ export class AjsonWatcherService {
         console.log(`${LOG} drainQueue processing file`, { filePath });
         await this.reindexFile(filePath);
       }
+
+      console.log('[checker] before persist');
+      this.db.persist();
+      console.log('[checker] after persist');
+
+      const rawDb = this.db.getDb();
+      if (rawDb) {
+        try {
+          const res = rawDb.exec('SELECT COUNT(*) FROM sources');
+          const count = res?.[0]?.values?.[0]?.[0];
+          console.log('[checker] post-persist readback verification counts', { sources: count });
+        } catch (e) {
+          console.error('[checker] readback verification failed', e);
+        }
+      }
+
     } finally {
       this.plugin.endIndexing();
+      console.log('[checker] indexing lock cleared');
 
       if (this.plugin.pendingAjsonReindex.size > 0) {
         this.scheduleDrain();
@@ -245,7 +263,7 @@ export class AjsonWatcherService {
               VALUES ('${fullFilePath.replace(/'/g, "''")}', ${mtime}, 0)
               ON CONFLICT(filepath) DO UPDATE SET mtime = ${mtime}, is_missing = 0
           `);
-          this.db.persist();
+          // Debounced persist to the end of drainQueue
       } catch (e) {
           console.error("Failed to update mtime", e);
       }
@@ -271,9 +289,8 @@ export class AjsonWatcherService {
       rawDb.exec(`UPDATE sources SET is_deleted = 1, deleted_at = ${Date.now()}, delete_reason = 'watcher delete' WHERE path = '${sourcePath.replace(/'/g, "''")}'`);
       rawDb.exec(`UPDATE index_file_meta SET is_missing = 1, missing_since = ${Date.now()}, missing_reason = 'watcher delete' WHERE filepath = '${fullFilePath.replace(/'/g, "''")}'`);
       rawDb.exec("COMMIT;");
-
-      this.db.persist();
       console.log(`${LOG} orphan cleanup (soft delete) complete for source:`, sourcePath);
+      // Debounced persist to the end of drainQueue
     } catch (err) {
       console.error(`${LOG} removeOrphansForFile error:`, err);
       try { this.db.getDb().exec("ROLLBACK;"); } catch (_) { /* ignore */ }

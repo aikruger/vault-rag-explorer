@@ -96,6 +96,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	endIndexing(): void {
 		this.isIndexing = false;
 		console.log("[VaultRagExplorerPlugin] endIndexing", {
+
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 			pendingCount: this.pendingAjsonReindex.size,

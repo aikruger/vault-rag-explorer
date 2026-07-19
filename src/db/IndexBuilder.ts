@@ -167,8 +167,7 @@ export class IndexBuilder {
 
     await new Promise(resolve => window.setTimeout(resolve, 0));
     console.log('[IndexBuilder] yielding before db.persist() / export()');
-
-    this.db.persist();
+    // We defer persistence to the caller (e.g. AjsonWatcherService or external indexer) to debounce writes.
     console.log('[IndexBuilder] buildFromPath EXIT — embeddings:', resultDummy.embeddingsWritten);
 
     return { sources: totalSources, blocks: totalBlocks, embeddings: resultDummy.embeddingsWritten };
