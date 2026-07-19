@@ -24,10 +24,7 @@ export class AjsonWatcherService {
     this.plugin = plugin;
     this.indexBuilder = indexBuilder;
     this.db = db;
-    console.log("[AjsonWatcherService] constructor received plugin", {
-      pluginConstructor: this.plugin?.constructor?.name,
-      hasBeginIndexing: typeof (this.plugin as { beginIndexing?: unknown })?.beginIndexing,
-    });
+    console.log("[AjsonWatcherService] constructor received plugin");
   }
 
   /**
@@ -55,10 +52,9 @@ export class AjsonWatcherService {
         ajsonFolderPath,
         { persistent: false },
         (eventType: string, filename: string | null) => {
-          console.log(`${LOG} fs.watch event — type:${eventType} file:${filename ?? "null"}`);
-
           if (!filename) return;
           if (!filename.endsWith(".ajson")) return;
+          console.log(`${LOG} [AjsonWatcher] .ajson change detected`, { filename });
 
           const fullPath = path.join(ajsonFolderPath, filename);
           this.scheduleReindex(fullPath);
@@ -113,18 +109,34 @@ export class AjsonWatcherService {
   // Private
   // ---------------------------------------------------------------------------
 
+  private isExternalIndexerRunning(): boolean {
+    const fs = require('fs');
+    const path = require('path');
+    const vaultAdapter = this.plugin.app.vault.adapter as any;
+    const basePath = vaultAdapter.getBasePath();
+    const pluginDir = path.join(basePath, '.obsidian', 'plugins', this.plugin.manifest.id);
+    const progressFile = path.join(pluginDir, 'data', 'index-progress.json');
+
+    if (!fs.existsSync(progressFile)) return false;
+
+    try {
+        const content = fs.readFileSync(progressFile, 'utf8');
+        const progress = JSON.parse(content);
+        const staleThreshold = 15000;
+        const heartbeatStale = (Date.now() - (progress.heartbeatAt || 0)) > staleThreshold;
+
+        return progress.status === 'running' && !heartbeatStale;
+    } catch (e) {
+        return false;
+    }
+  }
+
   private scheduleDrain(): void {
     if (this.plugin.reindexDrainScheduled) {
-      console.log(`${LOG} scheduleDrain skipped — already scheduled`, {
-        pendingCount: this.plugin.pendingAjsonReindex.size,
-      });
       return;
     }
 
     this.plugin.reindexDrainScheduled = true;
-    console.log(`${LOG} scheduleDrain set`, {
-      pendingCount: this.plugin.pendingAjsonReindex.size,
-    });
 
     window.setTimeout(() => {
       this.plugin.reindexDrainScheduled = false;
@@ -133,18 +145,16 @@ export class AjsonWatcherService {
   }
 
   private async drainQueue(): Promise<void> {
-    console.log(`${LOG} drainQueue start`, {
-      pendingCount: this.plugin.pendingAjsonReindex.size,
-      activeQueryCount: this.plugin.activeQueryCount,
-      isIndexing: this.plugin.isIndexing,
-    });
+    if (this.plugin.pendingAjsonReindex.size === 0) return;
+
+    if (this.isExternalIndexerRunning()) {
+        console.log(`${LOG} [plugin] bulk index denied - external indexer active`);
+        console.log(`${LOG} [AjsonWatcher] full build already running, incremental request queued`, { count: this.plugin.pendingAjsonReindex.size });
+        this.scheduleDrain();
+        return;
+    }
 
     if (!this.plugin.beginIndexing()) {
-      console.log(`${LOG} drainQueue deferred`, {
-        pendingCount: this.plugin.pendingAjsonReindex.size,
-        activeQueryCount: this.plugin.activeQueryCount,
-        isIndexing: this.plugin.isIndexing,
-      });
       this.scheduleDrain();
       return;
     }
@@ -161,9 +171,6 @@ export class AjsonWatcherService {
       this.plugin.endIndexing();
 
       if (this.plugin.pendingAjsonReindex.size > 0) {
-        console.log(`${LOG} drainQueue rescheduling — more files arrived`, {
-          pendingCount: this.plugin.pendingAjsonReindex.size,
-        });
         this.scheduleDrain();
       }
     }
@@ -177,13 +184,12 @@ export class AjsonWatcherService {
     const existing = this.debounceTimers.get(fullFilePath);
     if (existing) {
       clearTimeout(existing);
-      console.log(`${LOG} debounce reset for`, fullFilePath);
     }
 
     const timer = setTimeout(() => {
       this.debounceTimers.delete(fullFilePath);
       this.plugin.pendingAjsonReindex.add(fullFilePath);
-      console.log(`${LOG} debounced file enqueued`, {
+      console.log(`${LOG} [AjsonWatcher] debounced file enqueued`, {
         fullFilePath,
         pendingCount: this.plugin.pendingAjsonReindex.size,
       });
@@ -191,13 +197,8 @@ export class AjsonWatcherService {
     }, DEBOUNCE_MS);
 
     this.debounceTimers.set(fullFilePath, timer);
-    console.log(`${LOG} debounce scheduled (${DEBOUNCE_MS}ms) for`, fullFilePath);
   }
 
-  /**
-   * Re-parse a single .ajson file and upsert its contents into the DB.
-   * Handles the case where the file has been deleted (remove orphan records).
-   */
   private async reindexFile(fullFilePath: string): Promise<void> {
     const fs = require("fs");
     console.log(`${LOG} reindexFile start:`, fullFilePath);
@@ -209,63 +210,69 @@ export class AjsonWatcherService {
       return;
     }
 
+    // Skip if mtime is unchanged
+    try {
+        const stat = fs.statSync(fullFilePath);
+        const mtime = stat.mtimeMs;
+        const rawDb = this.db.getDb();
+        const res = rawDb.exec(`SELECT mtime FROM index_file_meta WHERE filepath = '${fullFilePath.replace(/'/g, "''")}'`);
+
+        if (res[0] && res[0].values[0]) {
+            const storedMtime = res[0].values[0][0] as number;
+            if (storedMtime === mtime) {
+                console.log(`${LOG} [AjsonWatcher] reindex skipped - unchanged mtime`, { fullFilePath });
+                return;
+            }
+        }
+    } catch (e) {
+        console.log(`${LOG} error checking mtime`, e);
+    }
+
     try {
       const result = await this.indexBuilder.buildFromSingleFile(
         this.watchPath,
         fullFilePath
       );
+
+      // Update mtime
+      try {
+          const stat = fs.statSync(fullFilePath);
+          const mtime = stat.mtimeMs;
+          const rawDb = this.db.getDb();
+          rawDb.exec(`
+              INSERT INTO index_file_meta (filepath, mtime, is_missing)
+              VALUES ('${fullFilePath.replace(/'/g, "''")}', ${mtime}, 0)
+              ON CONFLICT(filepath) DO UPDATE SET mtime = ${mtime}, is_missing = 0
+          `);
+          this.db.persist();
+      } catch (e) {
+          console.error("Failed to update mtime", e);
+      }
+
       console.log(`${LOG} reindexFile complete:`, fullFilePath, result);
     } catch (err) {
       console.error(`${LOG} reindexFile error for`, fullFilePath, err);
     }
   }
 
-  /**
-   * Remove sources, blocks, embeddings, and wikilinks for a deleted .ajson file.
-   * The .ajson filename maps to one or more source paths stored in the DB.
-   */
   private async removeOrphansForFile(fullFilePath: string): Promise<void> {
     console.log(`${LOG} removeOrphansForFile:`, fullFilePath);
     try {
       const rawDb = this.db.getDb();
-
-      // Derive the source path pattern from the .ajson filename
-      // Smart Connections names files like "path#to#note.ajson"
-      // Reconstruct as "path/to/note.md" for the DB lookup
       const path = require("path");
       const filename = path.basename(fullFilePath, ".ajson");
       const sourcePath = filename.replace(/#/g, "/") + ".md";
 
       console.log(`${LOG} looking up source path for deletion:`, sourcePath);
 
-      // Find the source id
-      const res = rawDb.exec(
-        `SELECT id FROM sources WHERE path = '${sourcePath.replace(/'/g, "''")}'`
-      );
-      if (!res[0] || !res[0].values[0]) {
-        console.log(`${LOG} no DB record found for deleted file, nothing to remove`);
-        return;
-      }
-
-      const sourceId = res[0].values[0][0] as number;
-      console.log(`${LOG} removing records for source id:`, sourceId, "path:", sourcePath);
-
+      // Mark as deleted instead of hard delete
       rawDb.exec("BEGIN TRANSACTION;");
-      rawDb.exec(`DELETE FROM embeddings WHERE owner_type = 'source' AND owner_id = ${sourceId}`);
-      rawDb.exec(`DELETE FROM wikilinks WHERE src_source_id = ${sourceId}`);
-
-      // Remove block embeddings first, then blocks
-      rawDb.exec(`
-        DELETE FROM embeddings
-        WHERE owner_type = 'block'
-          AND owner_id IN (SELECT id FROM blocks WHERE source_id = ${sourceId})
-      `);
-      rawDb.exec(`DELETE FROM blocks WHERE source_id = ${sourceId}`);
-      rawDb.exec(`DELETE FROM sources WHERE id = ${sourceId}`);
+      rawDb.exec(`UPDATE sources SET is_deleted = 1, deleted_at = ${Date.now()}, delete_reason = 'watcher delete' WHERE path = '${sourcePath.replace(/'/g, "''")}'`);
+      rawDb.exec(`UPDATE index_file_meta SET is_missing = 1, missing_since = ${Date.now()}, missing_reason = 'watcher delete' WHERE filepath = '${fullFilePath.replace(/'/g, "''")}'`);
       rawDb.exec("COMMIT;");
 
       this.db.persist();
-      console.log(`${LOG} orphan cleanup complete for source id:`, sourceId);
+      console.log(`${LOG} orphan cleanup (soft delete) complete for source:`, sourcePath);
     } catch (err) {
       console.error(`${LOG} removeOrphansForFile error:`, err);
       try { this.db.getDb().exec("ROLLBACK;"); } catch (_) { /* ignore */ }

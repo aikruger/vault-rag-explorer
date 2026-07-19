@@ -1,10 +1,14 @@
 import { App, Notice, PluginSettingTab, Setting, ButtonComponent } from "obsidian";
 import type VaultRagExplorerPlugin from "../plugin";
+import * as path from "path";
+import * as fs from "fs";
 
 const LOG_PREFIX = "[VaultRagExplorerSettingTab]";
 
 export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	plugin: VaultRagExplorerPlugin;
+    private refreshInterval: NodeJS.Timeout | null = null;
+    private statusEl: HTMLElement | null = null;
 
 	constructor(app: App, plugin: VaultRagExplorerPlugin) {
 		super(app, plugin);
@@ -50,44 +54,77 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 					});
 			});
 
-		// ── Index Status ────────────────────────────────────────────────────────
-		const statusEl = containerEl.createEl('p', {
+		// ── Index Status Dashboard ────────────────────────────────────────────────────────
+		this.statusEl = containerEl.createEl('div', {
 			cls: 'setting-item-description',
 		});
-		this.renderIndexStatus(statusEl);
+        this.statusEl.style.whiteSpace = 'pre-wrap';
+        this.statusEl.style.fontFamily = 'monospace';
+        this.statusEl.style.backgroundColor = 'var(--background-secondary)';
+        this.statusEl.style.padding = '10px';
+        this.statusEl.style.borderRadius = '5px';
+        this.statusEl.style.marginBottom = '15px';
+
+		this.refreshIndexStatus();
+
+        if (this.refreshInterval) {
+            clearInterval(this.refreshInterval);
+        }
+        this.refreshInterval = setInterval(() => {
+            this.refreshIndexStatus();
+        }, 2000);
 
 		// ── Build Button ────────────────────────────────────────────────────────
 		const buildSetting = new Setting(containerEl)
 			.setName('Build index')
-			.setDesc('Parse all Smart Connections embeddings and write to the local SQLite database.');
+			.setDesc('Parse all Smart Connections embeddings and write to the local SQLite database in the background.');
 
 		let buildBtn: ButtonComponent;
 		buildSetting.addButton(btn => {
 			buildBtn = btn;
-			btn.setButtonText('Build Index Now')
+			btn.setButtonText('Start Background Index')
 				.setCta()
 				.onClick(async () => {
 					if (!this.plugin.settings.smartFolderPath) {
 						new Notice('Please set the Smart Connections folder path first.');
 						return;
 					}
-					btn.setButtonText('Building…').setDisabled(true);
-					statusEl.setText('Building index…');
-					console.log('[VaultRagSettings] starting index build');
+					btn.setButtonText('Starting…').setDisabled(true);
+					console.log('[VaultRagSettings] launching external indexer');
 
 					try {
-						const result = await this.plugin.buildIndexFromSettings();
-						this.plugin.settings.lastIndexBuild = Date.now();
-						await this.plugin.saveSettings();
-						this.renderIndexStatus(statusEl);
-						btn.setButtonText('Build Index Now').setDisabled(false);
-						new Notice(`Index built: ${result.embeddings} embeddings from ${result.sources} sources`);
-						console.log('[VaultRagSettings] index build complete', result);
+                        const child_process = require('child_process');
+                        const vaultAdapter = this.app.vault.adapter as any;
+                        const basePath = vaultAdapter.getBasePath();
+                        const pluginDir = path.join(basePath, '.obsidian', 'plugins', this.plugin.manifest.id);
+
+                        const scriptPath = path.join(pluginDir, 'indexer', 'run-indexer.py');
+
+
+
+                        // Run detached so we don't block Obsidian
+                        const nodeScriptPath = path.join(pluginDir, 'indexer', 'build-index.js');
+                        console.log('[VaultRagSettings] spawning node external indexer', nodeScriptPath);
+                        // Use node via spawn to avoid cross-platform python issues
+                        const child = child_process.spawn('node', [nodeScriptPath, basePath], {
+                            detached: true,
+                            stdio: 'ignore',
+                            windowsHide: true
+                        });
+
+                        child.unref();
+
+						new Notice(`Background indexer launched (PID: ${child.pid})`);
+						console.log('[VaultRagSettings] index build launched', child.pid);
+
+                        setTimeout(() => {
+                            btn.setButtonText('Start Background Index').setDisabled(false);
+                            this.refreshIndexStatus();
+                        }, 2000);
 					} catch (err) {
-						btn.setButtonText('Build Index Now').setDisabled(false);
-						statusEl.setText('Build failed — check console for details');
-						new Notice('Index build failed: ' + (err as Error).message);
-						console.error('[VaultRagSettings] index build failed', err);
+						btn.setButtonText('Start Background Index').setDisabled(false);
+						new Notice('Failed to launch indexer: ' + (err as Error).message);
+						console.error('[VaultRagSettings] index build launch failed', err);
 					}
 				});
 		});
@@ -241,14 +278,102 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			});
 	}
 
-	private renderIndexStatus(el: HTMLElement): void {
-		const ts = this.plugin.settings.lastIndexBuild;
-		if (!ts) {
-			el.setText('Index not yet built.');
-			return;
-		}
-		const date = new Date(ts).toLocaleString();
-		el.setText(`Last built: ${date}`);
-		console.log('[VaultRagSettings] rendering status — lastBuild:', date);
+    hide(): void {
+        if (this.refreshInterval) {
+            clearInterval(this.refreshInterval);
+            this.refreshInterval = null;
+        }
+    }
+
+	private refreshIndexStatus(): void {
+        if (!this.statusEl) return;
+
+        console.log('[SettingTab] refreshIndexStatus start');
+
+        const vaultAdapter = this.app.vault.adapter as any;
+        const basePath = vaultAdapter.getBasePath();
+        const pluginDir = path.join(basePath, '.obsidian', 'plugins', this.plugin.manifest.id);
+        const progressFile = path.join(pluginDir, 'data', 'index-progress.json');
+        const dbPath = path.join(basePath, this.plugin.settings.indexDbPath);
+
+        let dbMtime = 0;
+        let dbSize = 0;
+        if (fs.existsSync(dbPath)) {
+            const stat = fs.statSync(dbPath);
+            dbMtime = stat.mtimeMs;
+            dbSize = stat.size;
+        }
+
+        console.log('[SettingTab] db stat snapshot', { dbMtime, dbSize });
+
+        let derivedStatusPayload = null;
+
+        if (fs.existsSync(progressFile)) {
+            try {
+                const content = fs.readFileSync(progressFile, 'utf8');
+                const progress = JSON.parse(content);
+
+                const now = Date.now();
+                const staleThreshold = 15000; // 15 seconds
+                const heartbeatStale = (now - (progress.heartbeatAt || 0)) > staleThreshold;
+
+                let status = progress.status;
+                if (status === 'running') {
+                    if (heartbeatStale) {
+                        // Check if DB is still moving even though heartbeat is stale
+                        if (dbMtime > progress.heartbeatAt) {
+                            status = 'SOFT_STALLED';
+                        } else {
+                            status = 'STALLED';
+                        }
+                    }
+                }
+
+                progress.derivedStatus = status;
+                derivedStatusPayload = progress;
+
+            } catch (e) {
+                console.error('[SettingTab] Failed to parse progress JSON', e);
+            }
+        }
+
+        console.log('[SettingTab] derived status', derivedStatusPayload);
+
+        if (!derivedStatusPayload) {
+            this.statusEl.setText('Status: IDLE\nNo index build has been run yet.');
+            return;
+        }
+
+        const p = derivedStatusPayload;
+
+        const startedStr = new Date(p.startedAt || 0).toLocaleString();
+        const heartbeatStr = new Date(p.heartbeatAt || 0).toLocaleTimeString();
+        const updatedStr = new Date(p.progressUpdatedAt || 0).toLocaleTimeString();
+        const dbMtimeStr = dbMtime > 0 ? new Date(dbMtime).toLocaleTimeString() : 'N/A';
+        const mbSize = (dbSize / (1024 * 1024)).toFixed(2);
+
+        const lines = [
+            `Status:             ${p.derivedStatus.toUpperCase()}`,
+            `Phase:              ${p.phase}`,
+            `PID:                ${p.pid || 'N/A'}`,
+            `-------------------------------------------`,
+            `Files Processed:    ${p.processedFiles} / ${p.totalFiles}`,
+            `Last File:          ${p.lastFile}`,
+            `Active Sources:     ${p.activeSources}`,
+            `Soft-deleted:       ${p.softDeletedSources}`,
+            `Sources Inserted:   ${p.sourcesInserted}`,
+            `Sources Updated:    ${p.sourcesUpdated}`,
+            `Blocks Upserted:    ${p.blocksUpserted}`,
+            `Embeddings Written: ${p.embeddingsUpserted}`,
+            `Errors:             ${p.errors}`,
+            `-------------------------------------------`,
+            `Started:            ${startedStr}`,
+            `Heartbeat:          ${heartbeatStr}`,
+            `Progress Updated:   ${updatedStr}`,
+            `Database Updated:   ${dbMtimeStr}`,
+            `Database Size:      ${mbSize} MB`
+        ];
+
+        this.statusEl.setText(lines.join('\n'));
 	}
 }
