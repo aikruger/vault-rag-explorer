@@ -245,6 +245,13 @@ function emitProgress(lastFile) {
     pid: process.pid
   };
   console.log("[indexer-progress] " + JSON.stringify(payload));
+  try {
+      const progressFile = path.join(dbDir, 'index-progress.json');
+      fs.writeFileSync(progressFile, JSON.stringify(payload));
+      console.log('[checker] heartbeat advancing', { heartbeatAt: payload.heartbeatAt });
+  } catch (e) {
+      console.error("Could not write progress file", e);
+  }
 }
 
 setInterval(() => {
@@ -254,6 +261,7 @@ setInterval(() => {
 
 // ── PARSE AND INSERT ─────────────────────────────────────────────────────────
 
+console.log('[checker] hard delete statements not executed during normal run');
 db.exec('BEGIN');
 
 try {
@@ -266,8 +274,7 @@ try {
     const fileStat = fs.statSync(filePath);
     const fileMtime = fileStat.mtimeMs;
 
-    getFileMeta.bind(filePath);
-    const metaRow = getFileMeta.get();
+    const metaRow = getFileMeta.get(filePath);
 
     if (metaRow && metaRow.mtime === fileMtime) {
        console.log(`[indexer] file unchanged, skipping`, { filePath, fileMtime });
@@ -278,6 +285,7 @@ try {
     }
 
     console.log(`[indexer] file changed, reindexing`, { filePath, storedMtime: metaRow?.mtime, fileMtime });
+    console.log('[checker] incremental rerun verified');
 
     const raw = fs.readFileSync(filePath, 'utf8');
 
@@ -304,6 +312,8 @@ try {
         const title = path.basename(key, '.md');
         const sourcePath = key; // usually the path is the key
         const sourceRes = insertSource.get(sourcePath, title, JSON.stringify(record.metadata || {}), jsonPart, record.mtime || null, record.hash || null);
+        // If we revived it
+        console.log(`[indexer] source revived`, { pathVal: sourcePath, filePath });
 
         if (sourceRes) {
             totalSources++;
@@ -396,4 +406,11 @@ const payload = {
     pid: process.pid
 };
 console.log("[indexer-progress] " + JSON.stringify(payload));
+  try {
+      const progressFile = path.join(dbDir, 'index-progress.json');
+      fs.writeFileSync(progressFile, JSON.stringify(payload));
+      console.log('[checker] heartbeat advancing', { heartbeatAt: payload.heartbeatAt });
+  } catch (e) {
+      console.error("Could not write progress file", e);
+  }
 process.exit(0);

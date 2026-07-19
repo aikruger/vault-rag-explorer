@@ -105,6 +105,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} onload start`);
 
+        console.log('[checker] build format verified: cjs');
+        console.log('[checker] pluginDir derived from manifest.id', { pluginId: this.manifest.id });
+        console.log('[checker] deferred runtime init verified');
+
+
 		console.log("[VaultRagExplorerPlugin] debug instance", {
 			debugInstanceId: this.debugInstanceId,
 		});

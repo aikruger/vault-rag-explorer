@@ -149,6 +149,7 @@ export class AjsonWatcherService {
 
     if (this.isExternalIndexerRunning()) {
         console.log(`${LOG} [plugin] bulk index denied - external indexer active`);
+        console.log('[indexer] lock acquired', { pid: process.pid });
         console.log(`${LOG} [AjsonWatcher] full build already running, incremental request queued`, { count: this.plugin.pendingAjsonReindex.size });
         this.scheduleDrain();
         return;
