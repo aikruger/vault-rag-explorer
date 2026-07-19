@@ -95,6 +95,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	endIndexing(): void {
 		this.isIndexing = false;
+		console.log("[checker] lock release");
 		console.log("[VaultRagExplorerPlugin] endIndexing", {
 
 			activeQueryCount: this.activeQueryCount,

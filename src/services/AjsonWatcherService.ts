@@ -170,9 +170,11 @@ export class AjsonWatcherService {
         await this.reindexFile(filePath);
       }
 
+      console.log('[checker] persist start');
       console.log('[checker] before persist');
       this.db.persist();
       console.log('[checker] after persist');
+      console.log('[checker] persist complete');
 
       const rawDb = this.db.getDb();
       if (rawDb) {
