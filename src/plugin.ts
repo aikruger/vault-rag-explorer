@@ -107,7 +107,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		const fsMod = require('fs');
 		const pathMod = require('path');
 		const basePath = (this.app.vault.adapter as import("obsidian").FileSystemAdapter).getBasePath();
-		const pluginDir = pathMod.join(basePath, this.manifest.dir ?? "");
+		const pluginDir = pathMod.join(basePath, ".obsidian", "plugins", this.manifest.id);
 		const progressFile = pathMod.join(pluginDir, 'index-progress.json');
 
 		if (!fsMod.existsSync(progressFile)) {

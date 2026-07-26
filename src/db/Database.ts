@@ -21,7 +21,7 @@ export class Database {
         // Derive the absolute path to the plugin folder using manifest.dir
         // manifest.dir is e.g. ".obsidian/plugins/vault-rag-explorer"
         // This is always set by Obsidian and does not rely on __dirname
-        this.pluginDir = path.join(basePath, plugin.manifest.dir ?? "");
+        this.pluginDir = path.join(basePath, ".obsidian", "plugins", plugin.manifest.id);
         this.plugin = plugin;
 
         console.log(`${LOG} dbPath resolved to`, this.dbPath);

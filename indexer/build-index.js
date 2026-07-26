@@ -5,7 +5,6 @@
 
 const { DatabaseSync } = require('node:sqlite');
 const fs   = require('fs');
-console.log('[indexer] syntax check passed');
 const path = require('path');
 
 // ── CONFIG ───────────────────────────────────────────────────────────────────
@@ -66,7 +65,7 @@ try {
 
 // ── SCHEMA ───────────────────────────────────────────────────────────────────
 db.exec(`
-  PRAGMA journal_mode = DELETE;
+  PRAGMA journal_mode = WAL;
   PRAGMA synchronous  = NORMAL;
   PRAGMA busy_timeout = 10000;
   PRAGMA foreign_keys = ON;
@@ -347,41 +346,8 @@ function parseAjsonRecords(raw, filePath) {
   return records;
 }
 
-
-const sessionId = process.env.VRE_SESSION_ID || 'session-' + Date.now();
-const progressPath = path.join(dbDir, '..', 'index-progress.json');
-
 function emitProgress(payload) {
-  payload.heartbeatAt = Date.now();
-  payload.sessionId = sessionId;
-
-  if (payload.phase === 'start') {
-    payload.startedAt = Date.now();
-    payload.status = 'running';
-  } else if (payload.phase === 'complete') {
-    payload.completedAt = Date.now();
-    payload.status = 'complete';
-  } else if (payload.phase === 'fatal') {
-    payload.status = 'error';
-  } else {
-    payload.status = 'running';
-  }
-
   process.stdout.write(`[indexer-progress] ${JSON.stringify(payload)}\n`);
-
-  try {
-    fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2));
-    console.log('[indexer] progress write success');
-  } catch(e) {
-    console.error('[indexer] progress write skipped (error)', e);
-  }
-
-  try {
-    const sz = fs.statSync(dbPath).size;
-    console.log('[indexer] main db file size check', { dbPath, bytes: sz });
-  } catch (e) {
-    console.log('[indexer] could not stat db file', e);
-  }
 }
 
 function removeMissingFiles(currentAjsonPaths) {
@@ -431,19 +397,10 @@ emitProgress({
 const currentAjsonPaths = new Set(ajsonFiles);
 sourcesDeleted = removeMissingFiles(currentAjsonPaths);
 
-const COMMIT_EVERY = 50;
-let sinceCommit = 0;
-
 try {
-  console.log('[indexer] outer try entered');
   let i = 0;
-  db.exec('BEGIN TRANSACTION');
-  console.log('[indexer] session start');
-  console.log('[indexer] batch begin');
-  console.log('[indexer] BEGIN batch transaction', { batchStart: 0 });
   for (const filePath of ajsonFiles) {
     i++;
-    console.log('[indexer] processing file begin', { filePath });
 
     const fileStat = fs.statSync(filePath);
     const fileMtime = fileStat.mtimeMs;
@@ -455,50 +412,7 @@ try {
     } catch(e) {}
 
     if (storedMtime !== null && storedMtime === fileMtime) {
-      console.log(`[indexer] skip reason: mtime match for ${filePath}`);
       console.log(`[indexer] file unchanged (mtime match), skipping: ${filePath}`);
-      // We don't need to emit progress for every skipped file, but let's do it periodically or just rely on the batch commit
-      // to avoid spamming the UI. We'll emit progress if it's the last file.
-      if (i % COMMIT_EVERY === 0 || i === ajsonFiles.length) {
-        emitProgress({
-          phase: 'file',
-          processedFiles: i,
-          totalFiles: ajsonFiles.length,
-          lastFile: filePath,
-          sourcesInserted,
-          sourcesUpdated,
-          sourcesDeleted,
-          blocksUpserted,
-          embeddingsUpserted,
-          errors: totalErrors
-        });
-      }
-      continue;
-    }
-
-    let raw;
-    let records = [];
-    let readSuccess = false;
-    for (let attempts = 0; attempts < 3; attempts++) {
-      try {
-        raw = fs.readFileSync(filePath, 'utf8');
-        records = parseAjsonRecords(raw, filePath);
-        readSuccess = true;
-        break;
-      } catch (err) {
-        if (attempts === 2) {
-          console.error(`[indexer] failed to read ${filePath} after 3 attempts`, err);
-        } else {
-          // Jittered backoff (e.g., 50ms to 150ms)
-          const delay = 50 + Math.random() * 100;
-          const startDelay = Date.now();
-          while (Date.now() - startDelay < delay) {} // synchronous sleep
-        }
-      }
-    }
-
-    if (!readSuccess) {
-      totalErrors++;
       emitProgress({
         phase: 'file',
         processedFiles: i,
@@ -514,8 +428,11 @@ try {
       continue;
     }
 
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const records = parseAjsonRecords(raw, filePath);
+
+    db.exec('BEGIN TRANSACTION');
     try {
-      db.exec('SAVEPOINT file_txn');
       // Find the source record and all block records
       const sourceRecords = [];
       const blockRecords = [];
@@ -636,42 +553,26 @@ try {
       }
 
       setIndexedFileMtime.run(filePath, fileMtime);
-      db.exec('RELEASE file_txn');
-
-      sinceCommit++;
-      if (sinceCommit >= COMMIT_EVERY) {
-        console.log('[indexer] db commit success');
-        db.exec('COMMIT TRANSACTION');
-        console.log('[indexer] COMMIT batch transaction', { processedFiles: i, sinceCommit });
-        db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-        console.log('[indexer] wal_checkpoint(TRUNCATE) after batch commit');
-
-        emitProgress({
-          phase: 'file',
-          processedFiles: i,
-          totalFiles: ajsonFiles.length,
-          lastFile: filePath,
-          sourcesInserted,
-          sourcesUpdated,
-          sourcesDeleted,
-          blocksUpserted,
-          embeddingsUpserted,
-          errors: totalErrors
-        });
-
-        console.log('[indexer] batch begin');
-        db.exec('BEGIN TRANSACTION');
-        sinceCommit = 0;
-      }
+      db.exec('COMMIT');
     } catch (e) {
-      db.exec('ROLLBACK TO file_txn');
+      db.exec('ROLLBACK');
       console.error(`[indexer] error processing file ${filePath}:`, e.message);
       totalErrors++;
     }
+
+    emitProgress({
+      phase: 'file',
+      processedFiles: i,
+      totalFiles: ajsonFiles.length,
+      lastFile: filePath,
+      sourcesInserted,
+      sourcesUpdated,
+      sourcesDeleted,
+      blocksUpserted,
+      embeddingsUpserted,
+      errors: totalErrors
+    });
   }
-  db.exec('COMMIT TRANSACTION'); // final partial batch
-  console.log('[indexer] final COMMIT', { processedFiles: i });
-  console.log('[indexer] db commit success');
 } catch (err) {
   console.error('[indexer] FATAL:', err.message);
 
@@ -689,9 +590,6 @@ try {
     error: err.message,
   });
 
-  console.log('[indexer] closing database connection cleanly');
-  try { db.close(); } catch(e){}
-  console.log('[indexer] database closed, exiting');
   process.exit(1);
 }
 
@@ -720,7 +618,4 @@ console.log('[indexer] sources deleted :', sourcesDeleted);
 console.log('[indexer] errors          :', totalErrors);
 console.log('[indexer] db size         :', dbSize, 'bytes');
 
-console.log('[indexer] closing database connection cleanly');
 db.close();
-console.log('[indexer] database closed, exiting');
-process.exit(0);
