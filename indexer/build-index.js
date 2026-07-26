@@ -5,6 +5,7 @@
 
 const { DatabaseSync } = require('node:sqlite');
 const fs   = require('fs');
+console.log('[indexer] syntax check passed');
 const path = require('path');
 
 // ── CONFIG ───────────────────────────────────────────────────────────────────
@@ -434,6 +435,7 @@ const COMMIT_EVERY = 50;
 let sinceCommit = 0;
 
 try {
+  console.log('[indexer] outer try entered');
   let i = 0;
   db.exec('BEGIN TRANSACTION');
   console.log('[indexer] session start');
@@ -441,6 +443,7 @@ try {
   console.log('[indexer] BEGIN batch transaction', { batchStart: 0 });
   for (const filePath of ajsonFiles) {
     i++;
+    console.log('[indexer] processing file begin', { filePath });
 
     const fileStat = fs.statSync(filePath);
     const fileMtime = fileStat.mtimeMs;
@@ -452,22 +455,24 @@ try {
     } catch(e) {}
 
     if (storedMtime !== null && storedMtime === fileMtime) {
+      console.log(`[indexer] skip reason: mtime match for ${filePath}`);
       console.log(`[indexer] file unchanged (mtime match), skipping: ${filePath}`);
       // We don't need to emit progress for every skipped file, but let's do it periodically or just rely on the batch commit
       // to avoid spamming the UI. We'll emit progress if it's the last file.
-      if (i === ajsonFiles.length) {
+      if (i % COMMIT_EVERY === 0 || i === ajsonFiles.length) {
         emitProgress({
-        phase: 'file',
-        processedFiles: i,
-        totalFiles: ajsonFiles.length,
-        lastFile: filePath,
-        sourcesInserted,
-        sourcesUpdated,
-        sourcesDeleted,
-        blocksUpserted,
-        embeddingsUpserted,
-        errors: totalErrors
-      });
+          phase: 'file',
+          processedFiles: i,
+          totalFiles: ajsonFiles.length,
+          lastFile: filePath,
+          sourcesInserted,
+          sourcesUpdated,
+          sourcesDeleted,
+          blocksUpserted,
+          embeddingsUpserted,
+          errors: totalErrors
+        });
+      }
       continue;
     }
 
