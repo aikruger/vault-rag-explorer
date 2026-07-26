@@ -276,7 +276,12 @@ export class AjsonWatcherService {
       rawDb.exec(`DELETE FROM sources WHERE id = ${sourceId}`);
       rawDb.exec("COMMIT;");
 
-      this.db.persist();
+      if ((this.plugin as any).isExternalIndexerRunning && (this.plugin as any).isExternalIndexerRunning()) {
+        console.warn('[AjsonWatcherService] aborting persist — external indexer became active mid-drain, in-memory snapshot is now stale');
+      } else {
+        console.log('[checker] before persist');
+        this.db.persist();
+      }
       console.log(`${LOG} orphan cleanup complete for source id:`, sourceId);
     } catch (err) {
       console.error(`${LOG} removeOrphansForFile error:`, err);

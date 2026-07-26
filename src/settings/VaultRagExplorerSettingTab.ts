@@ -6,6 +6,7 @@ const LOG_PREFIX = "[VaultRagExplorerSettingTab]";
 export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	plugin: VaultRagExplorerPlugin;
 	private indexProcess: any = null;
+	private lastReloadedProgressMs: number | null = null;
 	private indexStatusTimer: number | null = null;
 	private lastProgressFingerprint: string | null = null;
 	private lastObservedProgressAt: number | null = null;
@@ -250,10 +251,10 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		return pluginDir;
 	}
 
-	private getIndexerPy(): string {
+	private getIndexerNode(): string {
 		const path = require('path');
-		const scriptPath = path.join(this.getPluginDir(), 'indexer', 'run-indexer.py');
-		console.log('[SettingTab] getIndexerPy', { scriptPath });
+		const scriptPath = path.join(this.getPluginDir(), 'indexer', 'build-index.js');
+		console.log('[SettingTab] getIndexerNode', { scriptPath });
 		return scriptPath;
 	}
 
@@ -268,17 +269,17 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		const { spawn } = require('child_process');
 
 		const vaultRoot = this.getVaultRoot();
-		const scriptPath = this.getIndexerPy();
+		const scriptPath = this.getIndexerNode();
 
 		if (!fs.existsSync(scriptPath)) {
-			console.error('[SettingTab] missing run-indexer.py', { scriptPath });
-			new Notice('run-indexer.py not found in plugin indexer folder');
+			console.error('[SettingTab] missing build-index.js', { scriptPath });
+			new Notice('build-index.js not found in plugin indexer folder');
 			return;
 		}
 
 		console.log('[SettingTab] launching external indexer', { scriptPath, vaultRoot });
 
-		this.indexProcess = spawn('python', [scriptPath, vaultRoot], {
+		this.indexProcess = spawn('node', [scriptPath, vaultRoot], {
 			cwd: vaultRoot,
 			windowsHide: true,
 			stdio: ['ignore', 'pipe', 'pipe']
@@ -290,14 +291,21 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			vaultRoot,
 		});
 
+		const path = require('path');
+		const dbDir = path.join(this.getPluginDir(), 'data');
+		if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+		const logFile = path.join(dbDir, 'indexer.log');
+
 		this.indexProcess.stdout.on('data', (buf: Buffer) => {
 			const text = buf.toString();
 			console.log('[SettingTab][indexer stdout]', text);
+			fs.appendFileSync(logFile, text);
 		});
 
 		this.indexProcess.stderr.on('data', (buf: Buffer) => {
 			const text = buf.toString();
 			console.error('[SettingTab][indexer stderr]', text);
+			fs.appendFileSync(logFile, text);
 		});
 
 		this.indexProcess.on('close', (code: number) => {
@@ -468,6 +476,14 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			derived: { state: derivedStatus, reason },
 			prog,
 		  });
+
+		  if (derivedStatus.toUpperCase() === 'COMPLETE') {
+		    if (progressMtimeMs !== null && this.lastReloadedProgressMs !== progressMtimeMs) {
+		      this.lastReloadedProgressMs = progressMtimeMs;
+		      console.log('[SettingTab] external indexer completed — reloading plugin DB snapshot');
+		      await this.plugin.db.reload();
+		    }
+		  }
 
 		  statusDiv.createEl('p', { text: `Status: ${derivedStatus}` });
 		  statusDiv.createEl('p', { text: `Reason: ${reason}` });

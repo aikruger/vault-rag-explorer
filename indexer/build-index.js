@@ -65,7 +65,7 @@ try {
 
 // ── SCHEMA ───────────────────────────────────────────────────────────────────
 db.exec(`
-  PRAGMA journal_mode = WAL;
+  PRAGMA journal_mode = DELETE;
   PRAGMA synchronous  = NORMAL;
   PRAGMA busy_timeout = 10000;
   PRAGMA foreign_keys = ON;
@@ -348,6 +348,12 @@ function parseAjsonRecords(raw, filePath) {
 
 function emitProgress(payload) {
   process.stdout.write(`[indexer-progress] ${JSON.stringify(payload)}\n`);
+  try {
+    const sz = fs.statSync(dbPath).size;
+    console.log('[indexer] main db file size check', { dbPath, bytes: sz });
+  } catch (e) {
+    console.log('[indexer] could not stat db file', e);
+  }
 }
 
 function removeMissingFiles(currentAjsonPaths) {
@@ -397,8 +403,13 @@ emitProgress({
 const currentAjsonPaths = new Set(ajsonFiles);
 sourcesDeleted = removeMissingFiles(currentAjsonPaths);
 
+const COMMIT_EVERY = 50;
+let sinceCommit = 0;
+
 try {
   let i = 0;
+  db.exec('BEGIN TRANSACTION');
+  console.log('[indexer] BEGIN batch transaction', { batchStart: 0 });
   for (const filePath of ajsonFiles) {
     i++;
 
@@ -431,8 +442,8 @@ try {
     const raw = fs.readFileSync(filePath, 'utf8');
     const records = parseAjsonRecords(raw, filePath);
 
-    db.exec('BEGIN TRANSACTION');
     try {
+      db.exec('SAVEPOINT file_txn');
       // Find the source record and all block records
       const sourceRecords = [];
       const blockRecords = [];
@@ -553,9 +564,19 @@ try {
       }
 
       setIndexedFileMtime.run(filePath, fileMtime);
-      db.exec('COMMIT');
+      db.exec('RELEASE file_txn');
+
+      sinceCommit++;
+      if (sinceCommit >= COMMIT_EVERY) {
+        db.exec('COMMIT TRANSACTION');
+        console.log('[indexer] COMMIT batch transaction', { processedFiles: i, sinceCommit });
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+        console.log('[indexer] wal_checkpoint(TRUNCATE) after batch commit');
+        db.exec('BEGIN TRANSACTION');
+        sinceCommit = 0;
+      }
     } catch (e) {
-      db.exec('ROLLBACK');
+      db.exec('ROLLBACK TO file_txn');
       console.error(`[indexer] error processing file ${filePath}:`, e.message);
       totalErrors++;
     }
@@ -573,6 +594,8 @@ try {
       errors: totalErrors
     });
   }
+  db.exec('COMMIT TRANSACTION'); // final partial batch
+  console.log('[indexer] final COMMIT', { processedFiles: i });
 } catch (err) {
   console.error('[indexer] FATAL:', err.message);
 
@@ -590,6 +613,9 @@ try {
     error: err.message,
   });
 
+  console.log('[indexer] closing database connection cleanly');
+  try { db.close(); } catch(e){}
+  console.log('[indexer] database closed, exiting');
   process.exit(1);
 }
 
@@ -618,4 +644,7 @@ console.log('[indexer] sources deleted :', sourcesDeleted);
 console.log('[indexer] errors          :', totalErrors);
 console.log('[indexer] db size         :', dbSize, 'bytes');
 
+console.log('[indexer] closing database connection cleanly');
 db.close();
+console.log('[indexer] database closed, exiting');
+process.exit(0);

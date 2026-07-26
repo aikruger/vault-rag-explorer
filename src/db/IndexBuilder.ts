@@ -109,7 +109,7 @@ export class IndexBuilder {
     }
 
     // Apply performance pragmas for the write session
-    rawDb.exec("PRAGMA journal_mode = WAL;");
+    console.log("[IndexBuilder] note: journal_mode PRAGMA has no effect on-disk in sql.js — persistence only happens via db.export() in Database.persist()");
     rawDb.exec("PRAGMA synchronous = NORMAL;");
     rawDb.exec("PRAGMA temp_store = MEMORY;");
 
