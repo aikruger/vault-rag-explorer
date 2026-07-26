@@ -346,8 +346,35 @@ function parseAjsonRecords(raw, filePath) {
   return records;
 }
 
+
+const sessionId = 'session-' + Date.now();
+const progressPath = path.join(dbDir, '..', 'index-progress.json');
+
 function emitProgress(payload) {
+  payload.heartbeatAt = Date.now();
+  payload.sessionId = sessionId;
+
+  if (payload.phase === 'start') {
+    payload.startedAt = Date.now();
+    payload.status = 'running';
+  } else if (payload.phase === 'complete') {
+    payload.completedAt = Date.now();
+    payload.status = 'complete';
+  } else if (payload.phase === 'fatal') {
+    payload.status = 'error';
+  } else {
+    payload.status = 'running';
+  }
+
   process.stdout.write(`[indexer-progress] ${JSON.stringify(payload)}\n`);
+
+  try {
+    fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2));
+    console.log('[indexer] progress write success');
+  } catch(e) {
+    console.error('[indexer] progress write skipped (error)', e);
+  }
+
   try {
     const sz = fs.statSync(dbPath).size;
     console.log('[indexer] main db file size check', { dbPath, bytes: sz });
@@ -409,6 +436,8 @@ let sinceCommit = 0;
 try {
   let i = 0;
   db.exec('BEGIN TRANSACTION');
+  console.log('[indexer] session start');
+  console.log('[indexer] batch begin');
   console.log('[indexer] BEGIN batch transaction', { batchStart: 0 });
   for (const filePath of ajsonFiles) {
     i++;
@@ -424,7 +453,10 @@ try {
 
     if (storedMtime !== null && storedMtime === fileMtime) {
       console.log(`[indexer] file unchanged (mtime match), skipping: ${filePath}`);
-      emitProgress({
+      // We don't need to emit progress for every skipped file, but let's do it periodically or just rely on the batch commit
+      // to avoid spamming the UI. We'll emit progress if it's the last file.
+      if (i === ajsonFiles.length) {
+        emitProgress({
         phase: 'file',
         processedFiles: i,
         totalFiles: ajsonFiles.length,
@@ -568,10 +600,26 @@ try {
 
       sinceCommit++;
       if (sinceCommit >= COMMIT_EVERY) {
+        console.log('[indexer] db commit success');
         db.exec('COMMIT TRANSACTION');
         console.log('[indexer] COMMIT batch transaction', { processedFiles: i, sinceCommit });
         db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
         console.log('[indexer] wal_checkpoint(TRUNCATE) after batch commit');
+
+        emitProgress({
+          phase: 'file',
+          processedFiles: i,
+          totalFiles: ajsonFiles.length,
+          lastFile: filePath,
+          sourcesInserted,
+          sourcesUpdated,
+          sourcesDeleted,
+          blocksUpserted,
+          embeddingsUpserted,
+          errors: totalErrors
+        });
+
+        console.log('[indexer] batch begin');
         db.exec('BEGIN TRANSACTION');
         sinceCommit = 0;
       }
@@ -580,22 +628,10 @@ try {
       console.error(`[indexer] error processing file ${filePath}:`, e.message);
       totalErrors++;
     }
-
-    emitProgress({
-      phase: 'file',
-      processedFiles: i,
-      totalFiles: ajsonFiles.length,
-      lastFile: filePath,
-      sourcesInserted,
-      sourcesUpdated,
-      sourcesDeleted,
-      blocksUpserted,
-      embeddingsUpserted,
-      errors: totalErrors
-    });
   }
   db.exec('COMMIT TRANSACTION'); // final partial batch
   console.log('[indexer] final COMMIT', { processedFiles: i });
+  console.log('[indexer] db commit success');
 } catch (err) {
   console.error('[indexer] FATAL:', err.message);
 

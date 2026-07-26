@@ -259,7 +259,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	}
 
 	private async startExternalIndex(): Promise<void> {
-		if (this.indexProcess) {
+		if (this.indexProcess || ((this.plugin as any).isExternalIndexerRunning && (this.plugin as any).isExternalIndexerRunning())) {
 			new Notice('Indexer already running');
 			console.log('[SettingTab] startExternalIndex skipped: already running');
 			return;
