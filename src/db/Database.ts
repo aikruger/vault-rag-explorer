@@ -92,6 +92,24 @@ export class Database {
         }
         await this.init();
         console.log('[Database] reload() complete — in-memory snapshot now matches on-disk file');
+
+        try {
+            if (this.db) {
+                const getScalar = (db: SqlJsDatabase, sql: string): number => {
+                    const res = db.exec(sql);
+                    return res?.[0]?.values?.[0]?.[0] as number ?? 0;
+                };
+                const sourceCount = getScalar(this.db, 'SELECT COUNT(*) FROM sources');
+                const blockCount = getScalar(this.db, 'SELECT COUNT(*) FROM blocks');
+                console.log('[Database] post-reload verification', {
+                    sources: sourceCount,
+                    blocks: blockCount,
+                    timestamp: Date.now()
+                });
+            }
+        } catch (e) {
+            console.error('[Database] post-reload verification failed', e);
+        }
     }
 
     public getDb(): SqlJsDatabase {

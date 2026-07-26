@@ -452,13 +452,19 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		  if (explicitError) {
 			derivedStatus = 'BROKEN';
 			reason = `Progress file reports error: ${explicitError}`;
+		  } else if (this.indexProcess && prog.status === 'complete') {
+			derivedStatus = 'RUNNING';
+			reason = 'Waiting for process to fully exit after completion...';
+		  } else if (prog.errors && prog.errors > 0 && (prog.status === 'complete' || !!completedAt)) {
+			derivedStatus = 'PARTIAL';
+			reason = `Completed with ${prog.errors} errors.`;
 		  } else if (
 			prog.status === 'complete' ||
 			!!completedAt ||
-			(totalFiles > 0 && processedFiles >= totalFiles)
+			(totalFiles > 0 && processedFiles >= totalFiles && !this.indexProcess && prog.status !== 'running')
 		  ) {
 			derivedStatus = 'COMPLETE';
-			reason = 'Progress indicates all files were processed.';
+			reason = 'Progress indicates all files were processed successfully.';
 		  } else if (prog.status === 'running') {
 			if (!isProgressStale) {
 			  derivedStatus = 'RUNNING';
@@ -489,10 +495,10 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			prog,
 		  });
 
-		  if (derivedStatus.toUpperCase() === 'COMPLETE') {
+		  if (derivedStatus.toUpperCase() === 'COMPLETE' || derivedStatus.toUpperCase() === 'PARTIAL') {
 		    if (progressMtimeMs !== null && this.lastReloadedProgressMs !== progressMtimeMs) {
 		      this.lastReloadedProgressMs = progressMtimeMs;
-		      console.log('[SettingTab] external indexer completed — reloading plugin DB snapshot');
+		      console.log('[SettingTab] external indexer finished — reloading plugin DB snapshot', { status: derivedStatus });
 		      await this.plugin.db.reload();
 		    }
 		  }

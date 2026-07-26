@@ -471,8 +471,43 @@ try {
       continue;
     }
 
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const records = parseAjsonRecords(raw, filePath);
+    let raw;
+    let records = [];
+    let readSuccess = false;
+    for (let attempts = 0; attempts < 3; attempts++) {
+      try {
+        raw = fs.readFileSync(filePath, 'utf8');
+        records = parseAjsonRecords(raw, filePath);
+        readSuccess = true;
+        break;
+      } catch (err) {
+        if (attempts === 2) {
+          console.error(`[indexer] failed to read ${filePath} after 3 attempts`, err);
+        } else {
+          // Jittered backoff (e.g., 50ms to 150ms)
+          const delay = 50 + Math.random() * 100;
+          const startDelay = Date.now();
+          while (Date.now() - startDelay < delay) {} // synchronous sleep
+        }
+      }
+    }
+
+    if (!readSuccess) {
+      totalErrors++;
+      emitProgress({
+        phase: 'file',
+        processedFiles: i,
+        totalFiles: ajsonFiles.length,
+        lastFile: filePath,
+        sourcesInserted,
+        sourcesUpdated,
+        sourcesDeleted,
+        blocksUpserted,
+        embeddingsUpserted,
+        errors: totalErrors
+      });
+      continue;
+    }
 
     try {
       db.exec('SAVEPOINT file_txn');
