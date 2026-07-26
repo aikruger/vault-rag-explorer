@@ -347,7 +347,7 @@ function parseAjsonRecords(raw, filePath) {
 }
 
 
-const sessionId = 'session-' + Date.now();
+const sessionId = process.env.VRE_SESSION_ID || 'session-' + Date.now();
 const progressPath = path.join(dbDir, '..', 'index-progress.json');
 
 function emitProgress(payload) {

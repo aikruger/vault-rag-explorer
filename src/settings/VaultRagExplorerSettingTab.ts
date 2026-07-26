@@ -7,6 +7,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	plugin: VaultRagExplorerPlugin;
 	private indexProcess: any = null;
 	private lastReloadedProgressMs: number | null = null;
+	private expectedSessionId: string | null = null;
 	private indexStatusTimer: number | null = null;
 	private lastProgressFingerprint: string | null = null;
 	private lastObservedProgressAt: number | null = null;
@@ -279,13 +280,13 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 
 		console.log('[SettingTab] launching external indexer', { scriptPath, vaultRoot });
 
+		this.expectedSessionId = 'session-' + Date.now();
 		this.indexProcess = spawn('node', [scriptPath, vaultRoot], {
 			cwd: vaultRoot,
 			windowsHide: true,
-			stdio: ['ignore', 'pipe', 'pipe']
+			stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, VRE_SESSION_ID: this.expectedSessionId }
 		});
-
-		console.log('[SettingTab] external indexer spawned', {
+		console.log('[SettingTab] external indexer spawned', { expectedSessionId: this.expectedSessionId,
 			pid: this.indexProcess?.pid,
 			scriptPath,
 			vaultRoot,
@@ -416,6 +417,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			error?: string | null;
 			exitCode?: number | null;
 			pid?: number | null;
+			sessionId?: string;
 		  };
 
 		  const processedFiles = prog.processedFiles ?? prog.filesProcessed ?? 0;
@@ -438,6 +440,14 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 
 		  let derivedStatus = 'IDLE';
 		  let reason = 'No active indexing signal detected.';
+
+		  if (this.expectedSessionId && prog.sessionId && prog.sessionId !== this.expectedSessionId) {
+			// This is a progress file from a previous run, while we are waiting for the new run's file to appear
+			if (this.indexProcess) {
+				derivedStatus = 'RUNNING';
+				reason = 'Waiting for new session progress file to be written...';
+			}
+		  } else
 
 		  if (explicitError) {
 			derivedStatus = 'BROKEN';
@@ -472,8 +482,10 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			reason = 'No progress file and no database found.';
 		  }
 
+		  console.log('[SettingTab] classify status', { state: derivedStatus });
+		  console.log('[SettingTab] stalled reason', reason);
 		  console.log('[SettingTab] refreshIndexStatus classification', {
-			derived: { state: derivedStatus, reason },
+			derived: { state: derivedStatus, reason, sessionId: prog.sessionId },
 			prog,
 		  });
 
@@ -537,6 +549,12 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		  if (prog.pid) {
 			statusDiv.createEl('p', {
 			  text: `Indexer PID: ${prog.pid}`,
+			});
+		  }
+
+		  if (prog.sessionId) {
+			statusDiv.createEl('p', {
+			  text: `Session ID: ${prog.sessionId}`,
 			});
 		  }
 
