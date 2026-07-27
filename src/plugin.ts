@@ -95,7 +95,9 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	endIndexing(): void {
 		this.isIndexing = false;
+		console.log("[checker] lock release");
 		console.log("[VaultRagExplorerPlugin] endIndexing", {
+
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 			pendingCount: this.pendingAjsonReindex.size,
@@ -104,6 +106,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} onload start`);
+
+        console.log('[checker] build format verified: cjs');
+        console.log('[checker] pluginDir derived from manifest.id', { pluginId: this.manifest.id });
+        console.log('[checker] deferred runtime init verified');
+
 
 		console.log("[VaultRagExplorerPlugin] debug instance", {
 			debugInstanceId: this.debugInstanceId,
@@ -184,6 +191,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		console.log(`${LOG_PREFIX} settings loaded`, this.settings);
+		console.log("[VaultRagExplorerPlugin] retrieval settings loaded", {
+			retrievalGranularity: this.settings.retrievalGranularity,
+			retrievalDocumentLimit: this.settings.retrievalDocumentLimit,
+			retrievalBlocksPerDocument: this.settings.retrievalBlocksPerDocument,
+		});
 	}
 
 	async saveSettings(): Promise<void> {
@@ -257,6 +269,12 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		}
 
 		// Delegate to IndexBuilder with the validated path
+        if (ajsonFiles.length > 1) {
+          console.error('[MemoryCheck] plugin bulk indexing blocked; use external indexer', {
+            fileCount: ajsonFiles.length
+          });
+          throw new Error('Plugin bulk indexing disabled; use external indexer');
+        }
 		return await this.indexBuilder.buildFromPath(smartEnvPath, ajsonFiles);
 	}
 

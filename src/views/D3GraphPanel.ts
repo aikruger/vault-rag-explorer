@@ -401,6 +401,26 @@ export class D3GraphPanel {
     this.drawFrame();
   }
 
+  excludeByNodeId(nodeId: string): void {
+    console.log(`[D3GraphPanel] excludeByNodeId nodeId=${nodeId}`);
+    let count = 0;
+    for (const n of this.nodes) {
+      if (n.id === nodeId) { n.excluded = true; count++; }
+    }
+    console.log(`[D3GraphPanel] excluded ${count} nodes for nodeId=${nodeId}`);
+    this.drawFrame();
+  }
+
+  restoreByNodeId(nodeId: string): void {
+    console.log(`[D3GraphPanel] restoreByNodeId nodeId=${nodeId}`);
+    let count = 0;
+    for (const n of this.nodes) {
+      if (n.id === nodeId) { n.excluded = false; count++; }
+    }
+    console.log(`[D3GraphPanel] restored ${count} nodes for nodeId=${nodeId}`);
+    this.drawFrame();
+  }
+
   setNodeLocked(nodeId: string, locked: boolean): void {
     const node = this.nodes.find(n => n.id === nodeId);
     if (node) { node.locked = locked; this.drawFrame(); }

@@ -1,4 +1,4 @@
-import type { QueryRequest, QueryResponse, RetrievalHit } from "../types";
+import type { QueryRequest, QueryResponse, RetrievalHit, BlockMatch, FileMatch, QueryResultPayload } from "../types";
 import type { Database } from "../db/Database";
 import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
@@ -74,7 +74,35 @@ export class QueryService {
         console.warn(`[QueryService] Model mismatch warning: SC is using ${scModel} but stored embeddings indexed with ${modelName}`);
     }
 
-    const hits = this.scoreAndRank(queryVec, modelName, topK, wikilinkBoostEnabled, request.options);
+    const granularity = request.options.granularityOverride ?? this.plugin.settings.retrievalGranularity;
+    const retrievalCount = request.options.retrievalCountOverride ??
+      this.plugin.settings.retrievalDocumentLimit;
+    const blocksPerDocument = request.options.blocksPerDocumentOverride ??
+      this.plugin.settings.retrievalBlocksPerDocument;
+
+    console.log("[QueryService] runQuery options resolved", {
+      granularity,
+      retrievalCount,
+      blocksPerDocument,
+    });
+
+    const internalBlockFetchLimit = granularity === "file"
+      ? Math.max(retrievalCount * 6, retrievalCount * blocksPerDocument)
+      : retrievalCount;
+
+    console.log("[QueryService] internal fetch sizing", {
+      granularity,
+      retrievalCount,
+      blocksPerDocument,
+      internalBlockFetchLimit,
+    });
+
+    // Score and rank uses the internal block fetch limit if it's file mode
+    // (though scoreAndRank currently blends blocks and sources).
+    // For file-first aggregation, we fetch blocks.
+    const hits = this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options);
+
+    const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
 
       const elapsed = Date.now() - startTime;
       console.log(`${LOG_PREFIX} runQuery complete hits=${hits.length} durationMs=${elapsed}`);
@@ -83,6 +111,7 @@ export class QueryService {
         queryText: request.queryText,
         queryEmbeddingModel: modelName,
         hits,
+        payload,
         generatedAt: Date.now()
       };
     } catch (error) {
@@ -101,7 +130,8 @@ export class QueryService {
     ownerType: 'source' | 'block',
     ownerId: number,
     modelName: string,
-    topK: number
+    topK: number,
+    options?: import("../types").QueryOptions
   ): Promise<QueryResponse> {
     console.log(`[QueryService] expandSemantic ownerType=${ownerType} ownerId=${ownerId}`);
     const seedEmb = this.embeddingReader.loadForOwner(ownerType, ownerId, modelName);
@@ -117,14 +147,127 @@ export class QueryService {
 
     // Use seedEmb.vec as query vector. Expansion defaults to boost enabled.
     const { DEFAULT_QUERY_OPTIONS } = require("../types");
-    const hits = this.scoreAndRank(seedEmb.vec, modelName, topK, true, { ...DEFAULT_QUERY_OPTIONS, scopeFilterEnabled: false });
+    const queryOptions = options || { ...DEFAULT_QUERY_OPTIONS, scopeFilterEnabled: false };
+
+    const granularity = queryOptions.granularityOverride ?? this.plugin.settings.retrievalGranularity;
+    const retrievalCount = queryOptions.retrievalCountOverride ?? this.plugin.settings.retrievalDocumentLimit;
+    const blocksPerDocument = queryOptions.blocksPerDocumentOverride ?? this.plugin.settings.retrievalBlocksPerDocument;
+
+    const internalBlockFetchLimit = granularity === "file"
+      ? Math.max(retrievalCount * 6, retrievalCount * blocksPerDocument)
+      : retrievalCount;
+
+    const hits = this.scoreAndRank(seedEmb.vec, modelName, Math.max(topK, internalBlockFetchLimit), true, queryOptions);
+    const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
 
     return {
       queryText: `Semantic expansion of ${ownerType} ${ownerId}`,
       queryEmbeddingModel: modelName,
       hits,
+      payload,
       generatedAt: Date.now()
     };
+  }
+
+  public buildPayloadFromHits(
+    hits: RetrievalHit[],
+    granularity: "file" | "block",
+    retrievalCount: number,
+    blocksPerDocument: number
+  ): QueryResultPayload {
+    console.log("[QueryService] buildPayloadFromHits", { granularity, hitCount: hits.length, retrievalCount, blocksPerDocument });
+    const blockHits: BlockMatch[] = [];
+    for (const hit of hits) {
+      if (hit.nodeType === "block") {
+        blockHits.push({
+          blockId: hit.nodeId,
+          blockKey: hit.blockKey || "",
+          blockLabel: hit.title || null,
+          text: hit.previewText || "",
+          score: hit.finalScore,
+          lineStart: hit.lineStart ?? null,
+          lineEnd: hit.lineEnd ?? null,
+          sourceId: hit.sourceId,
+          path: hit.path,
+          title: hit.title,
+        });
+      }
+    }
+
+    if (granularity === "file") {
+      const files = this.aggregateBlockHitsToFiles(blockHits, retrievalCount, blocksPerDocument);
+      return {
+        granularity: "file",
+        files,
+        blocks: [],
+      };
+    } else {
+      return {
+        granularity: "block",
+        files: [],
+        blocks: blockHits.slice(0, retrievalCount),
+      };
+    }
+  }
+
+  private aggregateBlockHitsToFiles(
+    blockHits: BlockMatch[],
+    documentLimit: number,
+    blocksPerDocument: number
+  ): FileMatch[] {
+    console.log("[QueryService] aggregateBlockHitsToFiles start", {
+      blockHitCount: blockHits.length,
+      documentLimit,
+      blocksPerDocument,
+    });
+
+    const grouped = new Map<number, FileMatch>();
+
+    for (const hit of blockHits) {
+      let file = grouped.get(hit.sourceId);
+      if (!file) {
+        file = {
+          sourceId: hit.sourceId,
+          path: hit.path,
+          title: hit.title, // we might need to improve source title here
+          score: 0,
+          bestBlockScore: hit.score,
+          matchedBlocks: [],
+        };
+        grouped.set(hit.sourceId, file);
+      }
+
+      file.bestBlockScore = Math.max(file.bestBlockScore, hit.score);
+      file.matchedBlocks.push(hit);
+    }
+
+    const files = Array.from(grouped.values()).map((file) => {
+      file.matchedBlocks.sort((a, b) => b.score - a.score);
+      file.matchedBlocks = file.matchedBlocks.slice(0, blocksPerDocument);
+
+      const avgTopScore =
+        file.matchedBlocks.reduce((sum, block) => sum + block.score, 0) /
+        Math.max(file.matchedBlocks.length, 1);
+
+      file.score = file.bestBlockScore * 0.7 + avgTopScore * 0.3;
+      return file;
+    });
+
+    files.sort((a, b) => b.score - a.score);
+
+    const sliced = files.slice(0, documentLimit);
+
+    console.log("[QueryService] aggregateBlockHitsToFiles complete", {
+      fileCount: sliced.length,
+      topFiles: sliced.map((file) => ({
+        path: file.path,
+        score: file.score,
+        bestBlockScore: file.bestBlockScore,
+        matchedBlockCount: file.matchedBlocks.length,
+      })),
+    });
+
+    return sliced;
   }
 
   private scoreAndRank(
@@ -141,7 +284,8 @@ export class QueryService {
 
   if (options.scopeFilterEnabled) {
     console.log(`[QueryService] Building scope filter`, options);
-	  let sql = `SELECT id, path, mtime, metadata_json FROM sources WHERE 1=1`;
+	  console.log('[checker] retrieval query filter verified for active sources only');
+	  let sql = `SELECT id, path, mtime, metadata_json FROM sources WHERE COALESCE(is_deleted, 0) = 0`;
     const params: Record<string, unknown> = {};
 
     if (options.includeFolders.length > 0) {

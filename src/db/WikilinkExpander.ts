@@ -13,7 +13,7 @@ export class WikilinkExpander {
       SELECT w.dst_path AS path, 'outbound' AS direction
       FROM wikilinks w
       JOIN sources s ON s.id = w.src_source_id
-      WHERE s.path = $path
+      WHERE s.path = $path AND COALESCE(s.is_deleted, 0) = 0
     `);
 
     outboundStmt.bind({ $path: sourcePath });
@@ -27,7 +27,7 @@ export class WikilinkExpander {
       SELECT s.path, 'inbound' AS direction
       FROM wikilinks w
       JOIN sources s ON s.id = w.src_source_id
-      WHERE w.dst_path = $path
+      WHERE w.dst_path = $path AND COALESCE(s.is_deleted, 0) = 0
     `);
 
     inboundStmt.bind({ $path: sourcePath });

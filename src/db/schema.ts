@@ -1,4 +1,5 @@
 export const DB_SCHEMA_V1 = `
+
 CREATE TABLE IF NOT EXISTS sources (
   id INTEGER PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
@@ -6,8 +7,12 @@ CREATE TABLE IF NOT EXISTS sources (
   metadata_json TEXT,
   raw_json TEXT,
   mtime INTEGER,
-  hash TEXT
+  hash TEXT,
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER,
+  delete_reason TEXT
 );
+
 
 CREATE TABLE IF NOT EXISTS blocks (
   id INTEGER PRIMARY KEY,
@@ -59,6 +64,15 @@ CREATE TABLE IF NOT EXISTS rag_sessions (
   explanations_json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+
+CREATE TABLE IF NOT EXISTS index_file_meta (
+  filepath TEXT PRIMARY KEY,
+  mtime INTEGER,
+  is_missing INTEGER NOT NULL DEFAULT 0,
+  missing_since INTEGER,
+  missing_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sources_path ON sources(path);
