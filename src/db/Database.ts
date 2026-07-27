@@ -64,12 +64,49 @@ export class Database {
             this.db.run(DB_SCHEMA_V1);
             console.log(`${LOG} Schema applied successfully`);
 
+
             // Migration v2: add hash column to blocks if missing
             try {
               this.db.exec("ALTER TABLE blocks ADD COLUMN hash TEXT NOT NULL DEFAULT '';");
               console.log('[Database] Migration v2 applied: added hash column to blocks table');
             } catch (e) {
               console.log('[Database] Migration v2 skipped: hash column already exists in blocks');
+            }
+
+
+
+            // Migration v3: soft-delete columns on sources and index_file_meta
+            try {
+              console.log('[schema] ensureColumn start', { tableName: 'sources', columnName: 'is_deleted' });
+              this.db.exec("ALTER TABLE sources ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;");
+              console.log('[schema] added column', { tableName: 'sources', columnName: 'is_deleted' });
+
+              console.log('[schema] ensureColumn start', { tableName: 'sources', columnName: 'deleted_at' });
+              this.db.exec("ALTER TABLE sources ADD COLUMN deleted_at INTEGER;");
+              console.log('[schema] added column', { tableName: 'sources', columnName: 'deleted_at' });
+
+              console.log('[schema] ensureColumn start', { tableName: 'sources', columnName: 'delete_reason' });
+              this.db.exec("ALTER TABLE sources ADD COLUMN delete_reason TEXT;");
+              console.log('[schema] added column', { tableName: 'sources', columnName: 'delete_reason' });
+            } catch (e) {
+              console.log('[schema] soft-delete schema skipped or already exists (sources)', e);
+            }
+
+            try {
+              console.log('[schema] ensureColumn start', { tableName: 'index_file_meta', columnName: 'is_missing' });
+              this.db.exec("ALTER TABLE index_file_meta ADD COLUMN is_missing INTEGER NOT NULL DEFAULT 0;");
+              console.log('[schema] added column', { tableName: 'index_file_meta', columnName: 'is_missing' });
+
+              console.log('[schema] ensureColumn start', { tableName: 'index_file_meta', columnName: 'missing_since' });
+              this.db.exec("ALTER TABLE index_file_meta ADD COLUMN missing_since INTEGER;");
+              console.log('[schema] added column', { tableName: 'index_file_meta', columnName: 'missing_since' });
+
+              console.log('[schema] ensureColumn start', { tableName: 'index_file_meta', columnName: 'missing_reason' });
+              this.db.exec("ALTER TABLE index_file_meta ADD COLUMN missing_reason TEXT;");
+              console.log('[schema] added column', { tableName: 'index_file_meta', columnName: 'missing_reason' });
+              console.log('[schema] soft-delete schema ready');
+            } catch (e) {
+              console.log('[schema] soft-delete schema skipped or already exists (index_file_meta)', e);
             }
 
             this.persist();

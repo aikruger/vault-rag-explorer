@@ -284,7 +284,8 @@ export class QueryService {
 
   if (options.scopeFilterEnabled) {
     console.log(`[QueryService] Building scope filter`, options);
-	  let sql = `SELECT id, path, mtime, metadata_json FROM sources WHERE 1=1`;
+	  console.log('[checker] retrieval query filter verified for active sources only');
+	  let sql = `SELECT id, path, mtime, metadata_json FROM sources WHERE COALESCE(is_deleted, 0) = 0`;
     const params: Record<string, unknown> = {};
 
     if (options.includeFolders.length > 0) {

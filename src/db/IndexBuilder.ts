@@ -10,7 +10,7 @@ import type {
 const LOG_PREFIX = "[IndexBuilder]";
 
 /** Number of records to write per SQLite transaction. */
-const BATCH_SIZE = 500;
+const BATCH_SIZE = 50;
 
 export function getScalar(db: SqlJsDatabase, sql: string): number | string | null {
   try {
@@ -167,8 +167,7 @@ export class IndexBuilder {
 
     await new Promise(resolve => window.setTimeout(resolve, 0));
     console.log('[IndexBuilder] yielding before db.persist() / export()');
-
-    this.db.persist();
+    // We defer persistence to the caller (e.g. AjsonWatcherService or external indexer) to debounce writes.
     console.log('[IndexBuilder] buildFromPath EXIT — embeddings:', resultDummy.embeddingsWritten);
 
     return { sources: totalSources, blocks: totalBlocks, embeddings: resultDummy.embeddingsWritten };
@@ -205,6 +204,7 @@ export class IndexBuilder {
     const selectSourceId = rawDb.prepare(
       "SELECT id FROM sources WHERE path = $path"
     );
+    try {
 
     for (let batchStart = 0; batchStart < sources.length; batchStart += BATCH_SIZE) {
       const batch = sources.slice(batchStart, batchStart + BATCH_SIZE);
@@ -281,10 +281,16 @@ export class IndexBuilder {
       });
     }
 
-    selectHash.free();
-    insertSource.free();
-    updateSource.free();
-    selectSourceId.free();
+    } finally {
+      selectHash.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'selectHash' });
+      insertSource.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'insertSource' });
+      updateSource.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'updateSource' });
+      selectSourceId.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'selectSourceId' });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -331,6 +337,7 @@ export class IndexBuilder {
     const selectBlockId = rawDb.prepare(
       "SELECT id FROM blocks WHERE block_key = $block_key"
     );
+    try {
 
     for (let batchStart = 0; batchStart < blocks.length; batchStart += BATCH_SIZE) {
       const batch = blocks.slice(batchStart, batchStart + BATCH_SIZE);
@@ -343,12 +350,16 @@ export class IndexBuilder {
       for (const block of batch) {
         try {
           // Resolve parent source_id — required FK
-          selectSourceId.bind({ $path: block.blockPath });
           let srcRow: { id: number } | undefined;
-          if (selectSourceId.step()) {
-            srcRow = selectSourceId.getAsObject() as { id: number };
+          try {
+            selectSourceId.bind({ $path: block.blockPath });
+            if (selectSourceId.step()) {
+              srcRow = selectSourceId.getAsObject() as { id: number };
+            }
+          } finally {
+            selectSourceId.reset();
+            console.log('[MemoryCheck] stmt reset in finally', { name: 'selectSourceId', key: block.blockKey });
           }
-          selectSourceId.reset();
 
           if (!srcRow) {
             const msg = `Block ${block.blockKey}: parent source not found for path=${block.blockPath} — skipping`;
@@ -358,19 +369,25 @@ export class IndexBuilder {
             continue;
           }
 
-          selectBlockHash.bind({ $block_key: block.blockKey });
           let existing: { id: number; hash: string | null } | undefined;
-          if (selectBlockHash.step()) {
-            existing = selectBlockHash.getAsObject() as { id: number; hash: string | null };
+          try {
+            selectBlockHash.bind({ $block_key: block.blockKey });
+            if (selectBlockHash.step()) {
+              existing = selectBlockHash.getAsObject() as { id: number; hash: string | null };
+            }
+          } finally {
+            selectBlockHash.reset();
           }
-          selectBlockHash.reset();
 
-          selectStoredHashRow.bind({ $block_key: block.blockKey });
           let storedHashRow: { raw_json: string } | undefined;
-          if (selectStoredHashRow.step()) {
-            storedHashRow = selectStoredHashRow.getAsObject() as { raw_json: string };
+          try {
+            selectStoredHashRow.bind({ $block_key: block.blockKey });
+            if (selectStoredHashRow.step()) {
+              storedHashRow = selectStoredHashRow.getAsObject() as { raw_json: string };
+            }
+          } finally {
+            selectStoredHashRow.reset();
           }
-          selectStoredHashRow.reset();
 
           if (!forceRebuild && storedHashRow) {
             try {
@@ -416,13 +433,16 @@ export class IndexBuilder {
           }
 
           // Write embeddings
-          selectBlockId.bind({ $block_key: block.blockKey });
-          if (selectBlockId.step()) {
-            const blockIdRow = selectBlockId.getAsObject() as { id: number };
-            const embCount = this.upsertEmbeddings(rawDb, "block", blockIdRow.id, block.embeddings);
-            result.embeddingsWritten += embCount;
+          try {
+            selectBlockId.bind({ $block_key: block.blockKey });
+            if (selectBlockId.step()) {
+              const blockIdRow = selectBlockId.getAsObject() as { id: number };
+              const embCount = this.upsertEmbeddings(rawDb, "block", blockIdRow.id, block.embeddings);
+              result.embeddingsWritten += embCount;
+            }
+          } finally {
+            selectBlockId.reset();
           }
-          selectBlockId.reset();
         } catch (e) {
           const msg = `Error upserting block ${block.blockKey}: ${String(e)}`;
           console.error(`${LOG_PREFIX} ${msg}`);
@@ -436,12 +456,20 @@ export class IndexBuilder {
       });
     }
 
-    selectBlockHash.free();
-    selectSourceId.free();
-    selectStoredHashRow.free();
-    insertBlock.free();
-    updateBlock.free();
-    selectBlockId.free();
+    } finally {
+      selectBlockHash.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'selectBlockHash' });
+      selectSourceId.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'selectSourceId' });
+      selectStoredHashRow.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'selectStoredHashRow' });
+      insertBlock.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'insertBlock' });
+      updateBlock.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'updateBlock' });
+      selectBlockId.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'selectBlockId' });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -472,8 +500,8 @@ export class IndexBuilder {
         is_normalized = excluded.is_normalized,
         embedding    = excluded.embedding
     `);
-
     let written = 0;
+    try {
     for (const emb of embeddings) {
       console.log(`[IndexBuilder] inserting embeddings batch`, { batchSize: embeddings.length, modelName: emb.modelName });
       try {
@@ -504,7 +532,10 @@ export class IndexBuilder {
       }
     }
 
-    upsertEmb.free();
+    } finally {
+      upsertEmb.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'upsertEmb' });
+    }
 
     return written;
   }
@@ -531,16 +562,19 @@ export class IndexBuilder {
     const lookupDst = rawDb.prepare(
       "SELECT id FROM sources WHERE path = $path"
     );
-
     let written = 0;
+    try {
     for (const dstPath of outlinks) {
       try {
-        lookupDst.bind({ $path: dstPath });
         let dstRow: { id: number } | undefined;
-        if (lookupDst.step()) {
-           dstRow = lookupDst.getAsObject() as { id: number };
+        try {
+          lookupDst.bind({ $path: dstPath });
+          if (lookupDst.step()) {
+             dstRow = lookupDst.getAsObject() as { id: number };
+          }
+        } finally {
+          lookupDst.reset();
         }
-        lookupDst.reset();
 
         insertWikilink.run({
           $src_source_id: srcSourceId,
@@ -564,8 +598,12 @@ export class IndexBuilder {
       }
     }
 
-    insertWikilink.free();
-    lookupDst.free();
+    } finally {
+      insertWikilink.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'insertWikilink' });
+      lookupDst.free();
+      console.log('[MemoryCheck] stmt freed', { name: 'lookupDst' });
+    }
 
     return written;
   }
