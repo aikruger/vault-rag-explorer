@@ -11,6 +11,8 @@ export class Database {
     private SQL: SqlJsStatic | null = null;
     private dbPath: string;
     private pluginDir: string;
+    public loadedAt: number = 0;
+    private plugin: Plugin;
 
     constructor(app: App, dbRelPath: string, plugin: Plugin) {
         const basePath = (app.vault.adapter as import("obsidian").FileSystemAdapter).getBasePath();
@@ -19,7 +21,8 @@ export class Database {
         // Derive the absolute path to the plugin folder using manifest.dir
         // manifest.dir is e.g. ".obsidian/plugins/vault-rag-explorer"
         // This is always set by Obsidian and does not rely on __dirname
-        this.pluginDir = path.join(basePath, plugin.manifest.dir ?? "");
+        this.pluginDir = path.join(basePath, ".obsidian", "plugins", plugin.manifest.id);
+        this.plugin = plugin;
 
         console.log(`${LOG} dbPath resolved to`, this.dbPath);
         console.log(`${LOG} pluginDir resolved to`, this.pluginDir);
@@ -72,11 +75,40 @@ export class Database {
               console.log('[Database] Migration v2 skipped: hash column already exists in blocks');
             }
 
+            this.loadedAt = Date.now();
             this.persist();
             console.log(`${LOG} DB initialized successfully at`, this.dbPath);
         } catch (error) {
             console.error(`${LOG} Failed to initialize DB:`, error);
             throw error;
+        }
+    }
+
+    public async reload(): Promise<void> {
+        console.log('[Database] reload() — discarding in-memory snapshot and re-reading from disk', { dbPath: this.dbPath });
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+        await this.init();
+        console.log('[Database] reload() complete — in-memory snapshot now matches on-disk file');
+
+        try {
+            if (this.db) {
+                const getScalar = (db: SqlJsDatabase, sql: string): number => {
+                    const res = db.exec(sql);
+                    return res?.[0]?.values?.[0]?.[0] as number ?? 0;
+                };
+                const sourceCount = getScalar(this.db, 'SELECT COUNT(*) FROM sources');
+                const blockCount = getScalar(this.db, 'SELECT COUNT(*) FROM blocks');
+                console.log('[Database] post-reload verification', {
+                    sources: sourceCount,
+                    blocks: blockCount,
+                    timestamp: Date.now()
+                });
+            }
+        } catch (e) {
+            console.error('[Database] post-reload verification failed', e);
         }
     }
 
@@ -92,6 +124,26 @@ export class Database {
             console.warn(`${LOG} persist() called but DB or SQL is null — skipping`);
             return;
         }
+
+        const plugin = this.plugin as any;
+        if (plugin.isExternalIndexerRunning && plugin.isExternalIndexerRunning()) {
+            console.warn('[Database] persist() SKIPPED — external indexer is active');
+            return;
+        }
+
+        // Try to read progress to check if we loaded before it completed
+        try {
+            const progressPath = path.join(this.pluginDir, 'index-progress.json');
+            if (fs.existsSync(progressPath)) {
+                const prog = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+                const extIndexerCompletedAt = prog.completedAt || fs.statSync(progressPath).mtimeMs;
+                if (prog.status === 'complete' && extIndexerCompletedAt > this.loadedAt) {
+                    console.warn('[Database] persist() SKIPPED — external indexer completed at', extIndexerCompletedAt, 'but plugin snapshot loaded at', this.loadedAt, '— would have clobbered fresh data');
+                    return;
+                }
+            }
+        } catch(e) {}
+
         try {
             const data = this.db.export();
             const buffer = Buffer.from(data);
@@ -149,9 +201,14 @@ export class Database {
         }
     }
 
-    public close(): void {
+    public close(skipPersist: boolean = false): void {
         if (this.db) {
-            this.persist();
+            console.log(`${LOG} close() called — checking for active external indexer before persisting`);
+            if (!skipPersist) {
+                this.persist();
+            } else {
+                console.log(`${LOG} skipping persist during close due to skipPersist flag`);
+            }
             this.db.close();
             this.db = null;
             console.log(`${LOG} DB closed`);

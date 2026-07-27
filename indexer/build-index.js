@@ -347,7 +347,88 @@ function parseAjsonRecords(raw, filePath) {
 }
 
 function emitProgress(payload) {
+  payload.heartbeatAt = Date.now();
+  payload.sessionId = process.env.VRE_SESSION_ID || null;
+
+  if (payload.phase === 'start') {
+    payload.startedAt = Date.now();
+    payload.status = 'running';
+  } else if (payload.phase === 'complete') {
+    payload.completedAt = Date.now();
+    payload.status = payload.errors && payload.errors > 0 ? 'complete-with-errors' : 'complete';
+  } else if (payload.phase === 'fatal') {
+    payload.status = 'error';
+  } else {
+    payload.status = 'running';
+  }
+
   process.stdout.write(`[indexer-progress] ${JSON.stringify(payload)}\n`);
+
+  try {
+    const progressPath = path.join(dbDir, '..', 'index-progress.json');
+    fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2));
+    console.log('[indexer] progress write success');
+  } catch(e) {
+    console.error('[indexer] progress write skipped (error)', e);
+  }
+}
+
+function getSourceState(logicalSourcePath) {
+  try {
+    const row = getSourceId.get(logicalSourcePath);
+    return {
+      hasSource: !!row,
+      sourceId: row ? Number(row.id) : null,
+    };
+  } catch (error) {
+    console.error('[indexer] getSourceState failed', { logicalSourcePath, error: String(error) });
+    return {
+      hasSource: false,
+      sourceId: null,
+      error: String(error),
+    };
+  }
+}
+
+function getIndexedFileState(filePath) {
+  const logicalSourcePath = deriveLogicalSourcePathFromAjsonPath(filePath);
+  const esc = logicalSourcePath.replace(/'/g, "''");
+
+  const sourceRow = db.prepare(`SELECT id, path, hash, mtime FROM sources WHERE path = '${esc}' LIMIT 1`).get();
+  const metaMtime = db.prepare(`SELECT mtime FROM index_file_meta WHERE filepath = '${filePath.replace(/'/g, "''")}' LIMIT 1`).get()?.mtime ?? null;
+
+  if (!sourceRow) {
+    return {
+      hasMeta: metaMtime != null,
+      hasSource: false,
+      sourceId: null,
+      blockCount: 0,
+      sourceEmbeddingCount: 0,
+      blockEmbeddingCount: 0,
+      isComplete: false,
+      reason: 'missing source row'
+    };
+  }
+
+  const sourceId = sourceRow.id;
+
+  const blockCount = db.prepare(`SELECT COUNT(*) as c FROM blocks WHERE source_id = ${Number(sourceId)}`).get()?.c ?? 0;
+  const sourceEmbeddingCount = db.prepare(`SELECT COUNT(*) as c FROM embeddings WHERE owner_type = 'source' AND owner_id = ${Number(sourceId)}`).get()?.c ?? 0;
+  const blockEmbeddingCount = db.prepare(`SELECT COUNT(*) as c FROM embeddings WHERE owner_type = 'block' AND owner_id IN (SELECT id FROM blocks WHERE source_id = ${Number(sourceId)})`).get()?.c ?? 0;
+
+  const isComplete = blockCount > 0 && sourceEmbeddingCount > 0 && blockEmbeddingCount > 0;
+
+  return {
+    hasMeta: metaMtime != null,
+    metaMtime,
+    hasSource: true,
+    sourceId,
+    blockCount,
+    sourceEmbeddingCount,
+    blockEmbeddingCount,
+    isComplete,
+    reason: isComplete ? 'complete' : 'incomplete source/block/embedding rows'
+  };
 }
 
 function removeMissingFiles(currentAjsonPaths) {
@@ -397,42 +478,240 @@ emitProgress({
 const currentAjsonPaths = new Set(ajsonFiles);
 sourcesDeleted = removeMissingFiles(currentAjsonPaths);
 
+const COMMIT_EVERY = 50;
+let sinceCommit = 0;
+
 try {
   let i = 0;
+  db.exec('BEGIN TRANSACTION');
+  console.log('[indexer] session start');
+  console.log('[indexer] batch begin');
+  console.log('[indexer] BEGIN batch transaction', { batchStart: 0 });
+
   for (const filePath of ajsonFiles) {
     i++;
+    console.log('[indexer] evaluating file', { filePath });
+
+    const logicalSourcePath = deriveLogicalSourcePathFromAjsonPath(filePath);
+    console.log('[indexer] derived logical source path', { filePath, logicalSourcePath });
 
     const fileStat = fs.statSync(filePath);
     const fileMtime = fileStat.mtimeMs;
 
     let storedMtime = null;
     try {
-      const row = getIndexedFileMtime.get(filePath);
-      if (row) storedMtime = row.mtime;
-    } catch(e) {}
-
-    if (storedMtime !== null && storedMtime === fileMtime) {
-      console.log(`[indexer] file unchanged (mtime match), skipping: ${filePath}`);
-      emitProgress({
-        phase: 'file',
-        processedFiles: i,
-        totalFiles: ajsonFiles.length,
-        lastFile: filePath,
-        sourcesInserted,
-        sourcesUpdated,
-        sourcesDeleted,
-        blocksUpserted,
-        embeddingsUpserted,
-        errors: totalErrors
+      const metaRow = getIndexedFileMtime.get(filePath);
+      if (metaRow) storedMtime = metaRow.mtime;
+    } catch (error) {
+      console.warn('[indexer] failed reading index_file_meta row; treating as missing meta', {
+        filePath,
+        error: String(error),
       });
+    }
+
+    const sourceState = getSourceState(logicalSourcePath);
+    console.log('[indexer] source state', {
+      filePath,
+      logicalSourcePath,
+      hasSource: sourceState.hasSource,
+      sourceId: sourceState.sourceId,
+      storedMtime,
+      fileMtime,
+    });
+
+    if (!sourceState.hasSource) {
+      console.warn('[indexer] source row missing, forcing insert', {
+        filePath,
+        logicalSourcePath,
+        storedMtime,
+        fileMtime,
+      });
+    } else {
+      console.log('[indexer] source row exists, checking completeness', {
+        filePath,
+        logicalSourcePath,
+        sourceId: sourceState.sourceId,
+      });
+    }
+
+    const indexedState = getIndexedFileState(filePath);
+    if (indexedState) {
+      console.log('[indexer] indexed file state', {
+        filePath,
+        logicalSourcePath,
+        hasSource: indexedState.hasSource,
+        hasMeta: indexedState.hasMeta,
+        blockCount: indexedState.blockCount,
+        sourceEmbeddingCount: indexedState.sourceEmbeddingCount,
+        blockEmbeddingCount: indexedState.blockEmbeddingCount,
+        isComplete: indexedState.isComplete,
+        reason: indexedState.reason,
+      });
+    }
+
+    if (sourceState.hasSource && indexedState && !indexedState.isComplete) {
+      console.warn('[indexer] source row exists but DB rows are incomplete, forcing repair', {
+        filePath,
+        logicalSourcePath,
+        reason: indexedState.reason,
+        storedMtime,
+        fileMtime,
+      });
+    }
+
+    let shouldProcess = false;
+    let processReason = 'unknown';
+
+    if (!sourceState.hasSource) {
+      shouldProcess = true;
+      processReason = 'missing-source-row';
+    } else if (indexedState && !indexedState.isComplete) {
+      shouldProcess = true;
+      processReason = 'incomplete-db-rows';
+    } else if (storedMtime === null) {
+      shouldProcess = true;
+      processReason = 'missing-indexfilemeta';
+    } else if (storedMtime !== fileMtime) {
+      shouldProcess = true;
+      processReason = 'mtime-changed';
+    } else {
+      shouldProcess = false;
+      processReason = 'mtime-match-and-db-complete';
+    }
+
+    if (
+      sourceState.hasSource &&
+      indexedState &&
+      indexedState.isComplete &&
+      storedMtime === fileMtime
+    ) {
+      try {
+        const rawForCheck = fs.readFileSync(filePath, 'utf8');
+        const recordsForCheck = parseAjsonRecords(rawForCheck, filePath);
+
+        const sourceRecordsForCheck = [];
+        const blockRecordsForCheck = [];
+        for (const item of recordsForCheck) {
+          if (!item.key.includes('#')) sourceRecordsForCheck.push(item);
+          else blockRecordsForCheck.push(item);
+        }
+
+        const expectedSources = sourceRecordsForCheck.length;
+        const expectedBlocks = blockRecordsForCheck.length;
+
+        if (
+          indexedState.blockCount < expectedBlocks ||
+          (expectedSources > 0 && !indexedState.hasSource)
+        ) {
+          shouldProcess = true;
+          processReason = 'shape-mismatch-despite-mtime-match';
+          console.warn('[indexer] reprocessing file because DB shape is incomplete despite mtime match', {
+            filePath,
+            logicalSourcePath,
+            expectedSources,
+            expectedBlocks,
+            actualBlockCount: indexedState.blockCount,
+          });
+        }
+      } catch (error) {
+        shouldProcess = true;
+        processReason = 'verification-parse-failed';
+        console.warn('[indexer] verification parse failed; forcing repair', {
+          filePath,
+          logicalSourcePath,
+          error: String(error),
+        });
+      }
+    }
+
+    console.log('[indexer] process decision', {
+      filePath,
+      logicalSourcePath,
+      shouldProcess,
+      processReason,
+      storedMtime,
+      fileMtime,
+    });
+
+    if (!shouldProcess) {
+      console.log('[indexer] skipping complete indexed file', {
+        filePath,
+        logicalSourcePath,
+        storedMtime,
+        fileMtime,
+      });
+
+      if (i % COMMIT_EVERY === 0 || i === ajsonFiles.length) {
+        emitProgress({
+          phase: 'file',
+          processedFiles: i,
+          totalFiles: ajsonFiles.length,
+          lastFile: filePath,
+          sourcesInserted,
+          sourcesUpdated,
+          sourcesDeleted,
+          blocksUpserted,
+          embeddingsUpserted,
+          errors: totalErrors,
+          decision: 'skipped',
+          reason: processReason,
+          logicalSourcePath
+        });
+      }
       continue;
     }
 
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const records = parseAjsonRecords(raw, filePath);
+    console.log('[indexer] beginning file rebuild', {
+      filePath,
+      logicalSourcePath,
+      processReason,
+    });
 
-    db.exec('BEGIN TRANSACTION');
+    let raw;
+    let records = [];
+    let readSuccess = false;
+    for (let attempts = 0; attempts < 3; attempts++) {
+      try {
+        raw = fs.readFileSync(filePath, 'utf8');
+        records = parseAjsonRecords(raw, filePath);
+        readSuccess = true;
+        break;
+      } catch (err) {
+        if (attempts === 2) {
+          console.error(`[indexer] failed to read ${filePath} after 3 attempts`, err);
+        } else {
+          // Jittered backoff (e.g., 50ms to 150ms)
+          const delay = 50 + Math.random() * 100;
+          const startDelay = Date.now();
+          while (Date.now() - startDelay < delay) {} // synchronous sleep
+        }
+      }
+    }
+
+    if (!readSuccess) {
+      totalErrors++;
+      if (i % COMMIT_EVERY === 0 || i === ajsonFiles.length) {
+        emitProgress({
+          phase: 'file',
+          processedFiles: i,
+          totalFiles: ajsonFiles.length,
+          lastFile: filePath,
+          sourcesInserted,
+          sourcesUpdated,
+          sourcesDeleted,
+          blocksUpserted,
+          embeddingsUpserted,
+          errors: totalErrors,
+          decision: 'failed-to-read',
+          reason: processReason,
+          logicalSourcePath
+        });
+      }
+      continue;
+    }
+
     try {
+      db.exec('SAVEPOINT file_txn');
       // Find the source record and all block records
       const sourceRecords = [];
       const blockRecords = [];
@@ -456,6 +735,12 @@ try {
         const existingSourceRow = getSourceId.get(pathVal);
         const existedBefore = !!existingSourceRow;
 
+        console.log('[indexer] source upsert start', {
+          filePath,
+          logicalSourcePath: pathVal,
+          existedBefore,
+        });
+
         const res = insertSource.get(
           pathVal,
           src.record.title || src.record.name || null,
@@ -470,7 +755,13 @@ try {
 
           if (existedBefore) sourcesUpdated++;
           else sourcesInserted++;
-          console.log('[indexer] source upsert', { pathVal, existedBefore });
+
+          console.log('[indexer] source upsert success', {
+            filePath,
+            logicalSourcePath: pathVal,
+            sourceId,
+            existedBefore,
+          });
 
           // Embeddings for source
           if (src.record.embeddings && typeof src.record.embeddings === 'object') {
@@ -505,7 +796,11 @@ try {
         } catch(e){}
 
         if (!sourceId) {
-          console.warn(`[indexer]   skipping block ${blockKey} - source not found for path ${sourcePath}`);
+          console.warn('[indexer] skipping block because parent source was not found', {
+            filePath,
+            blockKey,
+            sourcePath,
+          });
           totalErrors++;
           continue;
         }
@@ -553,24 +848,61 @@ try {
       }
 
       setIndexedFileMtime.run(filePath, fileMtime);
-      db.exec('COMMIT');
+      db.exec('RELEASE file_txn');
+
+      sinceCommit++;
+      if (sinceCommit >= COMMIT_EVERY) {
+        console.log('[indexer] db commit success');
+        db.exec('COMMIT TRANSACTION');
+        console.log('[indexer] COMMIT batch transaction', { processedFiles: i, sinceCommit });
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+        console.log('[indexer] wal_checkpoint(TRUNCATE) after batch commit');
+
+        emitProgress({
+          phase: 'file',
+          processedFiles: i,
+          totalFiles: ajsonFiles.length,
+          lastFile: filePath,
+          sourcesInserted,
+          sourcesUpdated,
+          sourcesDeleted,
+          blocksUpserted,
+          embeddingsUpserted,
+          errors: totalErrors,
+          decision: 'processed',
+          reason: processReason,
+          logicalSourcePath
+        });
+
+        console.log('[indexer] batch begin');
+        db.exec('BEGIN TRANSACTION');
+        sinceCommit = 0;
+      }
     } catch (e) {
-      db.exec('ROLLBACK');
+      db.exec('ROLLBACK TO file_txn');
       console.error(`[indexer] error processing file ${filePath}:`, e.message);
       totalErrors++;
     }
+  }
 
+  console.log('[indexer] db commit success');
+  db.exec('COMMIT TRANSACTION'); // final partial batch
+  console.log('[indexer] final COMMIT', { processedFiles: ajsonFiles.length });
+
+  if (sinceCommit > 0 && sinceCommit < COMMIT_EVERY) {
     emitProgress({
       phase: 'file',
-      processedFiles: i,
+      processedFiles: ajsonFiles.length,
       totalFiles: ajsonFiles.length,
-      lastFile: filePath,
+      lastFile: '',
       sourcesInserted,
       sourcesUpdated,
       sourcesDeleted,
       blocksUpserted,
       embeddingsUpserted,
-      errors: totalErrors
+      errors: totalErrors,
+      decision: 'processed',
+      reason: 'final-batch'
     });
   }
 } catch (err) {
@@ -607,6 +939,22 @@ emitProgress({
   lastFile: '',
   error: null,
 });
+
+try {
+  const sourceCount = db.prepare('SELECT COUNT(*) AS c FROM sources').get()?.c ?? 0;
+  const blockCount = db.prepare('SELECT COUNT(*) AS c FROM blocks').get()?.c ?? 0;
+  const embeddingCount = db.prepare('SELECT COUNT(*) AS c FROM embeddings').get()?.c ?? 0;
+
+  console.log('[indexer] post-run table counts', {
+    sourceCount,
+    blockCount,
+    embeddingCount,
+  });
+} catch (error) {
+  console.error('[indexer] failed to read post-run table counts', {
+    error: String(error),
+  });
+}
 
 const dbSize = fs.statSync(dbPath).size;
 

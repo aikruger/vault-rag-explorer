@@ -49,6 +49,195 @@ export class IndexBuilder {
   // File metadata indexing
   // ---------------------------------------------------------------------------
 
+  private getIndexedFileState(rawDb: SqlJsDatabase, filePath: string) {
+    const esc = filePath.replace(/'/g, "''");
+
+    const sourceRow = rawDb.exec(`
+      SELECT id, path, hash, mtime
+      FROM sources
+      WHERE path = '${esc}'
+      LIMIT 1
+    `)[0]?.values?.[0] ?? null;
+
+    const metaMtime = rawDb.exec(`
+      SELECT mtime
+      FROM index_file_meta
+      WHERE filepath = '${esc}'
+      LIMIT 1
+    `)[0]?.values?.[0]?.[0] ?? null;
+
+    if (!sourceRow) {
+      return {
+        hasMeta: metaMtime != null,
+        hasSource: false,
+        sourceId: null,
+        blockCount: 0,
+        sourceEmbeddingCount: 0,
+        blockEmbeddingCount: 0,
+        isComplete: false,
+        reason: 'missing source row'
+      };
+    }
+
+    const sourceId = sourceRow[0];
+
+    const blockCount = Number(rawDb.exec(`
+      SELECT COUNT(*)
+      FROM blocks
+      WHERE source_id = ${Number(sourceId)}
+    `)[0]?.values?.[0]?.[0] ?? 0);
+
+    const sourceEmbeddingCount = Number(rawDb.exec(`
+      SELECT COUNT(*)
+      FROM embeddings
+      WHERE owner_type = 'source'
+        AND owner_id = ${Number(sourceId)}
+    `)[0]?.values?.[0]?.[0] ?? 0);
+
+    const blockEmbeddingCount = Number(rawDb.exec(`
+      SELECT COUNT(*)
+      FROM embeddings
+      WHERE owner_type = 'block'
+        AND owner_id IN (
+          SELECT id FROM blocks WHERE source_id = ${Number(sourceId)}
+        )
+    `)[0]?.values?.[0]?.[0] ?? 0);
+
+    const isComplete =
+      blockCount > 0 &&
+      sourceEmbeddingCount > 0 &&
+      blockEmbeddingCount > 0;
+
+    return {
+      hasMeta: metaMtime != null,
+      metaMtime,
+      hasSource: true,
+      sourceId,
+      blockCount,
+      sourceEmbeddingCount,
+      blockEmbeddingCount,
+      isComplete,
+      reason: isComplete ? 'complete' : 'incomplete source/block/embedding rows'
+    };
+  }
+
+  private computeExpectedFileShape(parsed: any) {
+    const expectedSources = parsed.sources.length;
+    const expectedBlocks = parsed.blocks.length;
+    const expectedSourceEmbeddings = parsed.sources.reduce((sum: number, s: any) => sum + (s.embeddings?.length ?? 0), 0);
+    const expectedBlockEmbeddings = parsed.blocks.reduce((sum: number, b: any) => sum + (b.embeddings?.length ?? 0), 0);
+
+    return {
+      expectedSources,
+      expectedBlocks,
+      expectedSourceEmbeddings,
+      expectedBlockEmbeddings
+    };
+  }
+
+  private getActualFileShape(rawDb: SqlJsDatabase, filePath: string) {
+    const esc = filePath.replace(/'/g, "''");
+
+    const sourceRows = rawDb.exec(`
+      SELECT id
+      FROM sources
+      WHERE path = '${esc}'
+    `)[0]?.values ?? [];
+
+    const sourceIds = sourceRows.map((r: any) => Number(r[0]));
+    if (sourceIds.length === 0) {
+      return {
+        actualSources: 0,
+        actualBlocks: 0,
+        actualSourceEmbeddings: 0,
+        actualBlockEmbeddings: 0
+      };
+    }
+
+    const sourceIdList = sourceIds.join(',');
+
+    const actualBlocks = Number(rawDb.exec(`
+      SELECT COUNT(*)
+      FROM blocks
+      WHERE source_id IN (${sourceIdList})
+    `)[0]?.values?.[0]?.[0] ?? 0);
+
+    const actualSourceEmbeddings = Number(rawDb.exec(`
+      SELECT COUNT(*)
+      FROM embeddings
+      WHERE owner_type = 'source'
+        AND owner_id IN (${sourceIdList})
+    `)[0]?.values?.[0]?.[0] ?? 0);
+
+    const actualBlockEmbeddings = Number(rawDb.exec(`
+      SELECT COUNT(*)
+      FROM embeddings
+      WHERE owner_type = 'block'
+        AND owner_id IN (
+          SELECT id FROM blocks WHERE source_id IN (${sourceIdList})
+        )
+    `)[0]?.values?.[0]?.[0] ?? 0);
+
+    return {
+      actualSources: sourceIds.length,
+      actualBlocks,
+      actualSourceEmbeddings,
+      actualBlockEmbeddings
+    };
+  }
+
+  private deleteFileRows(rawDb: SqlJsDatabase, filePath: string) {
+    const esc = filePath.replace(/'/g, "''");
+    const sourceRows = rawDb.exec(`
+      SELECT id FROM sources WHERE path = '${esc}'
+    `)[0]?.values ?? [];
+
+    const sourceIds = sourceRows.map((r: any) => Number(r[0]));
+
+    if (sourceIds.length === 0) {
+      console.log('[IndexBuilder] deleteFileRows no existing source rows', { filePath });
+      return;
+    }
+
+    const sourceIdList = sourceIds.join(',');
+
+    rawDb.exec('SAVEPOINT delete_file_rows;');
+    try {
+      rawDb.exec(`
+        DELETE FROM embeddings
+        WHERE (owner_type = 'source' AND owner_id IN (${sourceIdList}))
+           OR (owner_type = 'block' AND owner_id IN (
+                SELECT id FROM blocks WHERE source_id IN (${sourceIdList})
+              ))
+      `);
+
+      rawDb.exec(`
+        DELETE FROM wikilinks
+        WHERE src_source_id IN (${sourceIdList})
+      `);
+
+      rawDb.exec(`
+        DELETE FROM blocks
+        WHERE source_id IN (${sourceIdList})
+      `);
+
+      rawDb.exec(`
+        DELETE FROM sources
+        WHERE id IN (${sourceIdList})
+      `);
+
+      rawDb.exec('RELEASE delete_file_rows;');
+      console.warn('[IndexBuilder] deleted stale rows before file rebuild', {
+        filePath,
+        sourceIds
+      });
+    } catch (err) {
+      rawDb.exec('ROLLBACK TO delete_file_rows;');
+      console.error('[IndexBuilder] deleteFileRows failed', { filePath, error: String(err) });
+      throw err;
+    }
+  }
+
   private getIndexedFileMtime(rawDb: SqlJsDatabase, filePath: string): number | null {
     try {
       // We'll store per-file mtime in a new index_meta table
@@ -109,7 +298,7 @@ export class IndexBuilder {
     }
 
     // Apply performance pragmas for the write session
-    rawDb.exec("PRAGMA journal_mode = WAL;");
+    console.log("[IndexBuilder] note: journal_mode PRAGMA has no effect on-disk in sql.js — persistence only happens via db.export() in Database.persist()");
     rawDb.exec("PRAGMA synchronous = NORMAL;");
     rawDb.exec("PRAGMA temp_store = MEMORY;");
 
@@ -137,29 +326,103 @@ export class IndexBuilder {
       errors: [],
     };
 
-    for (let i = 0; i < ajsonFiles.length; i++) {
-      if (i > 0 && i % CHUNK_SIZE === 0) {
-        await new Promise(resolve => window.setTimeout(resolve, 0));
-        console.log(`[IndexBuilder] yielded at file ${i}/${ajsonFiles.length}`);
-      }
+    const repairQueue: string[] = [];
+    const normalQueue: string[] = [];
 
-      const filePath = ajsonFiles[i];
+    for (const filePath of ajsonFiles) {
       if (!filePath) continue;
 
       try {
         const fileStat = fs.statSync(filePath);
+        const currentMtime = fileStat.mtimeMs;
+        const indexedMtime = this.getIndexedFileMtime(rawDb, filePath);
+        const fileState = this.getIndexedFileState(rawDb, filePath);
+        const mtimeMatches = indexedMtime != null && indexedMtime === currentMtime;
+
+        if (!fileState.isComplete) {
+          repairQueue.push(filePath);
+          console.warn('[IndexBuilder] queued for repair because DB rows incomplete', {
+            filePath,
+            indexedMtime,
+            currentMtime,
+            reason: fileState.reason
+          });
+          continue;
+        }
+
+        if (mtimeMatches) {
+          // IMPORTANT:
+          // index_file_meta only records file mtimes.
+          // It does NOT prove that sources, blocks, embeddings, and wikilinks
+          // were fully written for this file.
+          // Skip only when mtime matches AND DB completeness check passes.
+
+          const raw = fs.readFileSync(filePath, 'utf8');
+          const parsed = parser.parseContent(raw, filePath);
+          const expected = this.computeExpectedFileShape(parsed);
+          const actual = this.getActualFileShape(rawDb, filePath);
+
+          const fullyIndexed =
+            actual.actualSources >= expected.expectedSources &&
+            actual.actualBlocks >= expected.expectedBlocks &&
+            actual.actualSourceEmbeddings >= expected.expectedSourceEmbeddings &&
+            actual.actualBlockEmbeddings >= expected.expectedBlockEmbeddings;
+
+          if (fullyIndexed) {
+            console.log('[IndexBuilder] skip confirmed: mtime matches and DB rows are complete', filePath);
+            continue;
+          } else {
+            console.warn('[IndexBuilder] reprocessing file because DB is incomplete despite matching mtime', {
+              filePath,
+              expectedSources: expected.expectedSources,
+              actualSources: actual.actualSources,
+              expectedBlocks: expected.expectedBlocks,
+              actualBlocks: actual.actualBlocks,
+              expectedSourceEmbeddings: expected.expectedSourceEmbeddings,
+              actualSourceEmbeddings: actual.actualSourceEmbeddings,
+              expectedBlockEmbeddings: expected.expectedBlockEmbeddings,
+              actualBlockEmbeddings: actual.actualBlockEmbeddings,
+              fullyIndexed
+            });
+            repairQueue.push(filePath);
+            continue;
+          }
+        }
+
+        normalQueue.push(filePath);
+      } catch (err) {
+        console.error('[IndexBuilder] queueing failed for', filePath, err);
+      }
+    }
+
+    const finalQueue = [...repairQueue, ...normalQueue];
+    console.log('[IndexBuilder] queue summary', {
+      totalFiles: ajsonFiles.length,
+      repairCount: repairQueue.length,
+      normalCount: normalQueue.length,
+      skippedByMtimeAndCompleteness: ajsonFiles.length - finalQueue.length
+    });
+
+    for (let i = 0; i < finalQueue.length; i++) {
+      if (i > 0 && i % CHUNK_SIZE === 0) {
+        await new Promise(resolve => window.setTimeout(resolve, 0));
+        console.log(`[IndexBuilder] yielded at file ${i}/${finalQueue.length}`);
+      }
+
+      const filePath = finalQueue[i];
+      if (!filePath) continue;
+
+      try {
+        if (i < repairQueue.length) {
+          this.deleteFileRows(rawDb, filePath);
+        }
+
+        if (i === 0 || i % 10 === 0 || i === finalQueue.length - 1) {
+          console.log(`[IndexBuilder] parsing file ${i + 1}/${finalQueue.length}: ${filePath}`);
+        }
+
+        const fileStat = fs.statSync(filePath);
         const fileMtime = fileStat.mtimeMs;
-        const storedMtime = this.getIndexedFileMtime(rawDb, filePath);
-
-        if (storedMtime !== null && storedMtime === fileMtime) {
-          console.log(`[IndexBuilder] file unchanged (mtime match), skipping: ${filePath}`);
-          continue;  // skip parsing entirely
-        }
-
-        if (i === 0 || i % 10 === 0 || i === ajsonFiles.length - 1) {
-          console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
-        }
-
         const raw = fs.readFileSync(filePath, 'utf8');
         const parsed = parser.parseContent(raw, filePath);
 

@@ -6,6 +6,8 @@ const LOG_PREFIX = "[VaultRagExplorerSettingTab]";
 export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	plugin: VaultRagExplorerPlugin;
 	private indexProcess: any = null;
+	private lastReloadedProgressMs: number | null = null;
+	private expectedSessionId: string | null = null;
 	private indexStatusTimer: number | null = null;
 	private lastProgressFingerprint: string | null = null;
 	private lastObservedProgressAt: number | null = null;
@@ -250,15 +252,15 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		return pluginDir;
 	}
 
-	private getIndexerPy(): string {
+	private getIndexerNode(): string {
 		const path = require('path');
-		const scriptPath = path.join(this.getPluginDir(), 'indexer', 'run-indexer.py');
-		console.log('[SettingTab] getIndexerPy', { scriptPath });
+		const scriptPath = path.join(this.getPluginDir(), 'indexer', 'build-index.js');
+		console.log('[SettingTab] getIndexerNode', { scriptPath });
 		return scriptPath;
 	}
 
 	private async startExternalIndex(): Promise<void> {
-		if (this.indexProcess) {
+		if (this.indexProcess || ((this.plugin as any).isExternalIndexerRunning && (this.plugin as any).isExternalIndexerRunning())) {
 			new Notice('Indexer already running');
 			console.log('[SettingTab] startExternalIndex skipped: already running');
 			return;
@@ -268,36 +270,43 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		const { spawn } = require('child_process');
 
 		const vaultRoot = this.getVaultRoot();
-		const scriptPath = this.getIndexerPy();
+		const scriptPath = this.getIndexerNode();
 
 		if (!fs.existsSync(scriptPath)) {
-			console.error('[SettingTab] missing run-indexer.py', { scriptPath });
-			new Notice('run-indexer.py not found in plugin indexer folder');
+			console.error('[SettingTab] missing build-index.js', { scriptPath });
+			new Notice('build-index.js not found in plugin indexer folder');
 			return;
 		}
 
 		console.log('[SettingTab] launching external indexer', { scriptPath, vaultRoot });
 
-		this.indexProcess = spawn('python', [scriptPath, vaultRoot], {
+		this.expectedSessionId = 'session-' + Date.now();
+		this.indexProcess = spawn('node', [scriptPath, vaultRoot], {
 			cwd: vaultRoot,
 			windowsHide: true,
-			stdio: ['ignore', 'pipe', 'pipe']
+			stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, VRE_SESSION_ID: this.expectedSessionId }
 		});
-
-		console.log('[SettingTab] external indexer spawned', {
+		console.log('[SettingTab] external indexer spawned', { expectedSessionId: this.expectedSessionId,
 			pid: this.indexProcess?.pid,
 			scriptPath,
 			vaultRoot,
 		});
 
+		const path = require('path');
+		const dbDir = path.join(this.getPluginDir(), 'data');
+		if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+		const logFile = path.join(dbDir, 'indexer.log');
+
 		this.indexProcess.stdout.on('data', (buf: Buffer) => {
 			const text = buf.toString();
 			console.log('[SettingTab][indexer stdout]', text);
+			fs.appendFileSync(logFile, text);
 		});
 
 		this.indexProcess.stderr.on('data', (buf: Buffer) => {
 			const text = buf.toString();
 			console.error('[SettingTab][indexer stderr]', text);
+			fs.appendFileSync(logFile, text);
 		});
 
 		this.indexProcess.on('close', (code: number) => {
@@ -408,6 +417,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			error?: string | null;
 			exitCode?: number | null;
 			pid?: number | null;
+			sessionId?: string;
 		  };
 
 		  const processedFiles = prog.processedFiles ?? prog.filesProcessed ?? 0;
@@ -431,16 +441,30 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		  let derivedStatus = 'IDLE';
 		  let reason = 'No active indexing signal detected.';
 
+		  if (this.expectedSessionId && prog.sessionId && prog.sessionId !== this.expectedSessionId) {
+			// This is a progress file from a previous run, while we are waiting for the new run's file to appear
+			if (this.indexProcess) {
+				derivedStatus = 'RUNNING';
+				reason = 'Waiting for new session progress file to be written...';
+			}
+		  } else
+
 		  if (explicitError) {
 			derivedStatus = 'BROKEN';
 			reason = `Progress file reports error: ${explicitError}`;
+		  } else if (this.indexProcess && prog.status === 'complete') {
+			derivedStatus = 'RUNNING';
+			reason = 'Waiting for process to fully exit after completion...';
+		  } else if (prog.errors && prog.errors > 0 && (prog.status === 'complete' || !!completedAt)) {
+			derivedStatus = 'PARTIAL';
+			reason = `Completed with ${prog.errors} errors.`;
 		  } else if (
 			prog.status === 'complete' ||
 			!!completedAt ||
-			(totalFiles > 0 && processedFiles >= totalFiles)
+			(totalFiles > 0 && processedFiles >= totalFiles && !this.indexProcess && prog.status !== 'running')
 		  ) {
 			derivedStatus = 'COMPLETE';
-			reason = 'Progress indicates all files were processed.';
+			reason = 'Progress indicates all files were processed successfully.';
 		  } else if (prog.status === 'running') {
 			if (!isProgressStale) {
 			  derivedStatus = 'RUNNING';
@@ -464,10 +488,20 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 			reason = 'No progress file and no database found.';
 		  }
 
+		  console.log('[SettingTab] classify status', { state: derivedStatus });
+		  console.log('[SettingTab] stalled reason', reason);
 		  console.log('[SettingTab] refreshIndexStatus classification', {
-			derived: { state: derivedStatus, reason },
+			derived: { state: derivedStatus, reason, sessionId: prog.sessionId },
 			prog,
 		  });
+
+		  if (derivedStatus.toUpperCase() === 'COMPLETE' || derivedStatus.toUpperCase() === 'PARTIAL') {
+		    if (progressMtimeMs !== null && this.lastReloadedProgressMs !== progressMtimeMs) {
+		      this.lastReloadedProgressMs = progressMtimeMs;
+		      console.log('[SettingTab] external indexer finished — reloading plugin DB snapshot', { status: derivedStatus });
+		      await this.plugin.db.reload();
+		    }
+		  }
 
 		  statusDiv.createEl('p', { text: `Status: ${derivedStatus}` });
 		  statusDiv.createEl('p', { text: `Reason: ${reason}` });
@@ -521,6 +555,12 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		  if (prog.pid) {
 			statusDiv.createEl('p', {
 			  text: `Indexer PID: ${prog.pid}`,
+			});
+		  }
+
+		  if (prog.sessionId) {
+			statusDiv.createEl('p', {
+			  text: `Session ID: ${prog.sessionId}`,
 			});
 		  }
 

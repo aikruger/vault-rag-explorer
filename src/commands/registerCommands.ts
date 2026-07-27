@@ -545,4 +545,51 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 		});
 
 	console.log("[VaultRagExplorer] Commands registered");
+
+	plugin.addCommand({
+		id: 'vault-rag-explorer-debug-check-incomplete-files',
+		name: 'Debug: Scan for Incomplete Files',
+		callback: async () => {
+			new Notice('Scanning for incomplete files... Check console for details.');
+			try {
+				const smartPath = plugin.getSmartFolderPath();
+				const fs = require('fs');
+				const path = require('path');
+				const ajsonFiles = fs.readdirSync(smartPath).filter((f: string) => f.endsWith('.ajson')).map((f: string) => path.join(smartPath, f));
+
+				const rawDb = plugin.db.getDb();
+				let incomplete = 0;
+
+				for (const filePath of ajsonFiles) {
+					const logicalPath = path.basename(filePath, '.ajson').replace(/#/g, "/") + ".md";
+					const esc = logicalPath.replace(/'/g, "''");
+
+					const sourceRows = rawDb.exec(`SELECT id FROM sources WHERE path = '${esc}'`)[0]?.values ?? [];
+					if (sourceRows.length === 0) continue; // Not indexed at all
+
+					const sourceIds = sourceRows.map((r: any) => Number(r[0]));
+					const sourceIdList = sourceIds.join(',');
+					const actualBlocks = rawDb.exec(`SELECT COUNT(*) FROM blocks WHERE source_id IN (${sourceIdList})`)[0]?.values?.[0]?.[0] as number ?? 0;
+					const actualSourceEmbeddings = rawDb.exec(`SELECT COUNT(*) FROM embeddings WHERE owner_type = 'source' AND owner_id IN (${sourceIdList})`)[0]?.values?.[0]?.[0] as number ?? 0;
+					const actualBlockEmbeddings = rawDb.exec(`SELECT COUNT(*) FROM embeddings WHERE owner_type = 'block' AND owner_id IN (SELECT id FROM blocks WHERE source_id IN (${sourceIdList}))`)[0]?.values?.[0]?.[0] as number ?? 0;
+
+					if (actualBlocks === 0 || actualSourceEmbeddings === 0 || actualBlockEmbeddings === 0) {
+						console.warn('[Debug] Incomplete file found in DB', {
+							filePath,
+							actualSources: sourceRows.length,
+							actualBlocks,
+							actualSourceEmbeddings,
+							actualBlockEmbeddings
+						});
+						incomplete++;
+					}
+				}
+
+				new Notice(`Scan complete. ${incomplete} incomplete files found.`);
+			} catch (e) {
+				console.error('[Debug] Scan failed', e);
+				new Notice('Scan failed. Check console.');
+			}
+		}
+	});
 }

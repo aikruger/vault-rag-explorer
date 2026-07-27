@@ -102,6 +102,39 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		});
 	}
 
+
+	public isExternalIndexerRunning(): boolean {
+		const fsMod = require('fs');
+		const pathMod = require('path');
+		const basePath = (this.app.vault.adapter as import("obsidian").FileSystemAdapter).getBasePath();
+		const pluginDir = pathMod.join(basePath, ".obsidian", "plugins", this.manifest.id);
+		const progressFile = pathMod.join(pluginDir, 'index-progress.json');
+
+		if (!fsMod.existsSync(progressFile)) {
+			return false;
+		}
+
+		try {
+			const stat = fsMod.statSync(progressFile);
+			const raw = fsMod.readFileSync(progressFile, 'utf8');
+			const prog = JSON.parse(raw);
+
+			if (prog.status === 'running') {
+				const now = Date.now();
+				const lastSignalAt = typeof prog.heartbeatAt === 'number' ? prog.heartbeatAt : stat.mtimeMs;
+				const staleThresholdMs = 10 * 60 * 1000;
+				if (now - lastSignalAt > staleThresholdMs) {
+					return false;
+				}
+				return true;
+			}
+			return false;
+		} catch (e) {
+			console.error(`${LOG_PREFIX} error checking isExternalIndexerRunning:`, e);
+			return false;
+		}
+	}
+
 	async onload(): Promise<void> {
 		console.log(`${LOG_PREFIX} onload start`);
 
@@ -176,7 +209,11 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 		this.view = null;
 		if (this.db) {
-			this.db.close();
+			const isRunning = this.isExternalIndexerRunning();
+			if (isRunning) {
+				console.log(`${LOG_PREFIX} onunload: external indexer is running, passing skipPersist=true to db.close()`);
+			}
+			this.db.close(isRunning);
 		}
 		console.log(`${LOG_PREFIX} Plugin unloaded`);
 	}
