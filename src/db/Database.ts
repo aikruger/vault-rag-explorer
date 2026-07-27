@@ -5,12 +5,15 @@ import * as fs from "fs";
 import { DB_SCHEMA_V1 } from "./schema";
 
 const LOG = "[Database]";
-
 export class Database {
     private db: SqlJsDatabase | null = null;
     private SQL: SqlJsStatic | null = null;
     private dbPath: string;
     private pluginDir: string;
+
+    private lastPersistAt = 0;
+    private persistPending = false;
+    private readonly PERSIST_MIN_INTERVAL_MS = 10_000; // don't do a full export/write more than once per 10s
 
     constructor(app: App, dbRelPath: string, plugin: Plugin) {
         const basePath = (app.vault.adapter as import("obsidian").FileSystemAdapter).getBasePath();
@@ -122,6 +125,38 @@ export class Database {
             throw new Error("Database not initialized. Call init() first.");
         }
         return this.db;
+    }
+
+    /**
+     * Throttled entry point for watcher-driven persists. Guarantees at most one
+     * real disk write per PERSIST_MIN_INTERVAL_MS, while still flushing any
+     * pending write shortly after the window closes so nothing is lost.
+     */
+    public requestPersist(): void {
+        const now = Date.now();
+        const elapsed = now - this.lastPersistAt;
+
+        if (elapsed >= this.PERSIST_MIN_INTERVAL_MS) {
+            console.log(`${LOG} requestPersist — throttle window elapsed, persisting immediately`, { elapsed });
+            this.lastPersistAt = now;
+            this.persist();
+            return;
+        }
+
+        if (this.persistPending) {
+            console.log(`${LOG} requestPersist — persist already scheduled, skipping duplicate schedule`);
+            return;
+        }
+
+        const waitMs = this.PERSIST_MIN_INTERVAL_MS - elapsed;
+        console.log(`${LOG} requestPersist — throttled, scheduling deferred persist`, { waitMs });
+        this.persistPending = true;
+        window.setTimeout(() => {
+            this.persistPending = false;
+            this.lastPersistAt = Date.now();
+            console.log(`${LOG} requestPersist — deferred persist firing now`);
+            this.persist();
+        }, waitMs);
     }
 
     public persist(): void {

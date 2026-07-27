@@ -188,7 +188,7 @@ export class AjsonWatcherService {
       if (anyWorkDone) {
         console.log('[checker] persist start');
         console.log('[checker] before persist');
-        this.db.persist();
+        this.db.requestPersist();
         console.log('[checker] after persist');
         console.log('[checker] persist complete');
 
