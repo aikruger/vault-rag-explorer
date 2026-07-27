@@ -2024,7 +2024,7 @@ export class VaultRagExplorerView extends ItemView {
 		const lockedSet = new Set(lockedNodes.map(n => `note-${n.nodeId}`));
 		const nodes = files.map(file => ({
 			id: `note-${file.sourceId}`,
-			label: file.title,
+			label: file.title || `Untitled (source ${file.sourceId})`,
 			nodeType: "note",
 			score: file.score,
 			sourceId: file.sourceId,
@@ -2067,8 +2067,12 @@ export class VaultRagExplorerView extends ItemView {
 		})) as RetrievalHit[];
 		try {
 			const semEdges = await this.buildSemanticEdges(mockHits);
+			const missingTitleCount = nodes.filter(n => !n.label || n.label.startsWith("Untitled")).length;
+			console.log(`[VaultRagExplorerView] renderFileGraph node labels`, { total: nodes.length, missingTitleCount });
 			this.graphPanel.setGraph(nodes, [...edges, ...semEdges]);
 		} catch (e) {
+			const missingTitleCount = nodes.filter(n => !n.label || n.label.startsWith("Untitled")).length;
+			console.log(`[VaultRagExplorerView] renderFileGraph node labels`, { total: nodes.length, missingTitleCount });
 			this.graphPanel.setGraph(nodes, edges);
 		}
 	}
@@ -2084,7 +2088,7 @@ export class VaultRagExplorerView extends ItemView {
 		const lockedSet = new Set(lockedNodes.map(n => `block-${n.nodeId}`));
 		const nodes = blocks.map(block => ({
 			id: `block-${block.blockId}`,
-			label: block.title,
+			label: block.title || `Untitled (block ${block.blockId})`,
 			nodeType: "block",
 			score: block.score,
 			sourceId: block.sourceId,
@@ -2107,8 +2111,12 @@ export class VaultRagExplorerView extends ItemView {
 		})) as RetrievalHit[];
 		try {
 			const semEdges = await this.buildSemanticEdges(mockHits);
+			const missingTitleCount = nodes.filter(n => !n.label || n.label.startsWith("Untitled")).length;
+			console.log(`[VaultRagExplorerView] renderBlockGraph node labels`, { total: nodes.length, missingTitleCount });
 			this.graphPanel.setGraph(nodes, semEdges);
 		} catch (e) {
+			const missingTitleCount = nodes.filter(n => !n.label || n.label.startsWith("Untitled")).length;
+			console.log(`[VaultRagExplorerView] renderBlockGraph node labels`, { total: nodes.length, missingTitleCount });
 			this.graphPanel.setGraph(nodes, []);
 		}
 	}
@@ -2129,7 +2137,7 @@ export class VaultRagExplorerView extends ItemView {
     const lockedSet = new Set(lockedNodes.map(n => `${n.nodeType}-${n.nodeId}`));
     const nodes = hits.map(hit => ({
         id: `${hit.nodeType}-${hit.nodeId}`,
-        label: hit.title,
+        label: hit.title || `Untitled (${hit.nodeType} ${hit.nodeId})`,
         nodeType: hit.nodeType,
         score: hit.finalScore,
         sourceId: hit.sourceId,
@@ -2162,10 +2170,14 @@ export class VaultRagExplorerView extends ItemView {
     try {
         const semEdges = await this.buildSemanticEdges(hits);
         console.log(`[VaultRagExplorerView] renderGraph — wikiEdges=${edges.length} semEdges=${semEdges.length}`);
+        const missingTitleCount = nodes.filter(n => !n.label || n.label.startsWith("Untitled")).length;
+        console.log(`[VaultRagExplorerView] renderGraph node labels`, { total: nodes.length, missingTitleCount });
         panel.setGraph(nodes, [...edges, ...semEdges]);
         console.log(`[VaultRagExplorerView] renderGraph — setGraph called with ${nodes.length} nodes`);
     } catch (e) {
         console.error("[VaultRagExplorerView] renderGraph — buildSemanticEdges failed, rendering with wikilinks only", e);
+        const missingTitleCount = nodes.filter(n => !n.label || n.label.startsWith("Untitled")).length;
+        console.log(`[VaultRagExplorerView] renderGraph node labels`, { total: nodes.length, missingTitleCount });
         panel.setGraph(nodes, edges);
     }
 }
@@ -2188,15 +2200,29 @@ export class VaultRagExplorerView extends ItemView {
         modelName
       );
       if (!vecB) continue;
+
+      const normA = vecA.norm ?? Math.sqrt(vecA.vec.reduce((s, v) => s + v*v, 0));
+      const normB = vecB.norm ?? Math.sqrt(vecB.vec.reduce((s, v) => s + v*v, 0));
+
+      if (normA < 1e-6 || normB < 1e-6) {
+        console.warn('[VaultRagExplorerView] buildSemanticEdges skipping near-zero-norm vector', { ownerA: hits[i]?.nodeId, ownerB: hits[j]?.nodeId, normA, normB });
+        continue;
+      }
+
       let dot = 0;
       for (let k = 0; k < vecA.vec.length; k++) dot += (vecA.vec[k] || 0) * (vecB.vec[k] || 0);
-      if (dot >= THRESHOLD) {
+
+      const cos = dot / (normA * normB);
+      const safeCos = Math.min(1, Math.max(-1, cos));
+
+      if (safeCos >= THRESHOLD) {
+        console.log('[VaultRagExplorerView] buildSemanticEdges pair', { i: hits[i]?.nodeId, j: hits[j]?.nodeId, normA, normB, rawDot: dot, cos: safeCos });
         semEdges.push({
           id: `sem-${hits[i]?.nodeId}-${hits[j]?.nodeId}`,
           source: `${hits[i]?.nodeType}-${hits[i]?.nodeId}`,
           target: `${hits[j]?.nodeType}-${hits[j]?.nodeId}`,
           edgeType: "semantic",
-          weight: dot,
+          weight: safeCos,
           expansion: false,
         } as unknown as GraphEdge);
       }
@@ -2217,10 +2243,21 @@ export class VaultRagExplorerView extends ItemView {
 				if (!vecB) continue;
 				let dot = 0;
 				for (let k = 0; k < vecA.vec.length; k++) dot += (vecA.vec[k] || 0) * (vecB.vec[k] || 0);
-				if (dot >= THRESHOLD) {
+				const normA = vecA.norm ?? Math.sqrt(vecA.vec.reduce((s, v) => s + v*v, 0));
+				const normB = vecB.norm ?? Math.sqrt(vecB.vec.reduce((s, v) => s + v*v, 0));
+				if (normA < 1e-6 || normB < 1e-6) {
+					console.warn('[VaultRagExplorerView] addCrossEdges skipping near-zero-norm vector', { ownerA: hits[i]?.nodeId, ownerB: hits[j]?.nodeId, normA, normB });
+					continue;
+				}
+				const cos = dot / (normA * normB);
+				const safeCos = Math.min(1, Math.max(-1, cos));
+
+				if (safeCos >= THRESHOLD) {
+					console.log('[VaultRagExplorerView] addCrossEdges pair', { i: hits[i]?.nodeId, j: hits[j]?.nodeId, normA, normB, rawDot: dot, cos: safeCos });
 					const edgeId = `sem-${hits[i]?.nodeId}-${hits[j]?.nodeId}`;
-					if (!cy.getElementById(edgeId).length) {
-						cy.add({ data: { id: edgeId, source: `${hits[i]?.nodeType}-${hits[i]?.nodeId}`, target: `${hits[j]?.nodeType}-${hits[j]?.nodeId}`, edgeType: 'semantic', weight: dot } });
+					const _cy = cy as { getElementById: (id: string) => { length: number }; add: (data: unknown) => void };
+					if (!_cy.getElementById(edgeId).length) {
+						_cy.add({ data: { id: edgeId, source: `${hits[i]?.nodeType}-${hits[i]?.nodeId}`, target: `${hits[j]?.nodeType}-${hits[j]?.nodeId}`, edgeType: 'semantic', weight: safeCos } });
 					}
 				}
 			}

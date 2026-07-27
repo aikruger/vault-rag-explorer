@@ -76,11 +76,20 @@ export class D3GraphPanel {
         .id(d => d.id)
         .distance(d => {
           const w = typeof d.weight === "number" ? d.weight : 0.5;
-          return 40 + (1 - w) * 260;
+          const clampedW = Math.min(1, Math.max(-1, w));
+          const dist = 40 + (1 - clampedW) * 260;
+          if (!Number.isFinite(dist) || dist < 0) {
+            console.error("[D3GraphPanel] non-finite/negative link distance computed, forcing fallback", { rawWeight: w, dist });
+            return 150;
+          }
+          return dist;
         })
         .strength(0.4)
       )
-      .on("tick", () => this.drawFrame());
+      .on("tick", () => {
+        console.log("[D3GraphPanel] tick alpha=", this.simulation.alpha().toFixed(4));
+        this.drawFrame();
+      });
 
     console.log("[D3GraphPanel] simulation created");
     return sim;
@@ -97,6 +106,7 @@ export class D3GraphPanel {
     }
     const maxDegree = Math.max(1, ...degree.values());
     for (const node of this.nodes) {
+      if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
       const d = degree.get(node.id) ?? 0;
       const base = node.nodeType === "block" ? 5 : 7;
       const max = node.nodeType === "block" ? 20 : 28;
@@ -115,12 +125,12 @@ export class D3GraphPanel {
     for (const edge of this.edges) {
       const src = edge.source as GraphNode;
       const tgt = edge.target as GraphNode;
-      if (src.x === undefined || tgt.x === undefined) continue;
+      if (!Number.isFinite(src.x) || !Number.isFinite(src.y) || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.y)) continue;
       if (src.excluded || tgt.excluded) continue;
 
       ctx.beginPath();
-      ctx.moveTo(src.x, src.y!);
-      ctx.lineTo(tgt.x, tgt.y!);
+      ctx.moveTo(src.x as number, src.y as number);
+      ctx.lineTo(tgt.x as number, tgt.y as number);
 
       if (edge.expansion) {
         ctx.strokeStyle = edge.edgeType === "wikilink" ? "#ffd700" : "#4a9eff";
@@ -145,7 +155,10 @@ export class D3GraphPanel {
 
     for (const node of this.nodes) {
       if (node.excluded) continue;
-      if (node.x === undefined) continue;
+      if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) {
+        console.warn("[D3GraphPanel] skipping node with non-finite position", { id: node.id, x: node.x, y: node.y });
+        continue;
+      }
 
       const isHovered = this.hoveredNode?.id === node.id;
       const isSelected = this.selectedNodeId === node.id;
@@ -155,7 +168,7 @@ export class D3GraphPanel {
       if (node.nodeType === "query") fill = "#ffffff";
 
       ctx.beginPath();
-      ctx.arc(node.x, node.y!, node.radius * this.nodeScale, 0, 2 * Math.PI);
+      ctx.arc(node.x as number, node.y as number, node.radius * this.nodeScale, 0, 2 * Math.PI);
       ctx.fillStyle = fill;
       ctx.fill();
 
@@ -190,8 +203,12 @@ export class D3GraphPanel {
         ctx.textBaseline = "top";
         ctx.shadowColor = "#000000";
         ctx.shadowBlur = 3;
-        const shortLabel = node.label.length > 22 ? node.label.slice(0, 20) + "…" : node.label;
-        ctx.fillText(shortLabel, node.x, node.y! + node.radius + 3);
+        const safeLabel = typeof node.label === "string" && node.label.length > 0 ? node.label : "(untitled)";
+        if (!node.label) {
+          console.warn("[D3GraphPanel] drawFrame encountered node with missing/invalid label — using fallback", { id: node.id, nodeType: node.nodeType, rawLabel: node.label });
+        }
+        const shortLabel = safeLabel.length > 22 ? safeLabel.slice(0, 20) + "…" : safeLabel;
+        ctx.fillText(shortLabel, node.x as number, (node.y as number) + node.radius + 3);
         ctx.shadowBlur = 0;
       }
     }
@@ -330,7 +347,11 @@ export class D3GraphPanel {
     console.log(`[D3GraphPanel] setGraph nodes=${nodes.length} edges=${edges.length}`);
     const posMap = new Map<string, { x: number; y: number; fx: number | null | undefined; fy: number | null | undefined; pinned?: boolean }>();
     for (const n of this.nodes) {
-      if (n.x !== undefined) posMap.set(n.id, { x: n.x, y: n.y ?? 0, fx: n.fx, fy: n.fy, pinned: n.pinned });
+      if (Number.isFinite(n.x) && Number.isFinite(n.y)) {
+        posMap.set(n.id, { x: n.x as number, y: n.y ?? 0, fx: n.fx, fy: n.fy, pinned: n.pinned });
+      } else {
+        console.warn("[D3GraphPanel] setGraph discarding non-finite cached position", { id: n.id, x: n.x, y: n.y });
+      }
     }
     this.nodes = nodes;
     this.edges = edges;
@@ -344,6 +365,7 @@ export class D3GraphPanel {
     (this.simulation.force("link") as d3.ForceLink<GraphNode, GraphEdge>).links(this.edges);
     this.simulation.alpha(0.8).restart();
     console.log("[D3GraphPanel] simulation restarted after setGraph");
+    console.log("[D3GraphPanel] setGraph position cache", { reused: posMap.size, totalNodes: nodes.length });
   }
 
   addNodes(newNodes: GraphNode[], newEdges: GraphEdge[]): void {
@@ -365,6 +387,34 @@ export class D3GraphPanel {
     (this.simulation.force("link") as d3.ForceLink<GraphNode, GraphEdge>).links(this.edges);
     this.simulation.alpha(0.5).restart();
     console.log("[D3GraphPanel] simulation restarted after addNodes");
+  }
+  addExpansion(newNodes: GraphNode[], newEdges: GraphEdge[]): void {
+    console.log(`[D3GraphPanel] addExpansion new=${newNodes.length} newEdges=${newEdges.length}`);
+    const existingIds = new Set(this.nodes.map(n => n.id));
+    for (const n of newNodes) {
+      if (!existingIds.has(n.id)) {
+        n.x = this.width / 2 + (Math.random() - 0.5) * 100;
+        n.y = this.height / 2 + (Math.random() - 0.5) * 100;
+        this.nodes.push(n);
+        existingIds.add(n.id);
+      }
+    }
+    const nodeIds = new Set(this.nodes.map(n => n.id));
+    const existingEdgeIds = new Set(this.edges.map(e => e.id));
+    for (const e of newEdges) {
+      const srcId = typeof e.source === "string" ? e.source : (e.source).id;
+      const tgtId = typeof e.target === "string" ? e.target : (e.target).id;
+      if (!nodeIds.has(srcId) || !nodeIds.has(tgtId)) {
+        console.warn("[D3GraphPanel] addExpansion skipping edge with unknown endpoint", { edgeId: e.id, srcId, tgtId });
+        continue;
+      }
+      if (!existingEdgeIds.has(e.id)) this.edges.push(e);
+    }
+    this.computeRadii();
+    this.simulation.nodes(this.nodes);
+    (this.simulation.force("link") as d3.ForceLink<GraphNode, GraphEdge>).links(this.edges);
+    this.simulation.alpha(0.5).restart();
+    console.log("[D3GraphPanel] simulation restarted after addExpansion");
   }
 
   removeNode(nodeId: string): void {
@@ -504,7 +554,13 @@ reheat(): void {
       (this.simulation.force("link") as d3.ForceLink<GraphNode, GraphEdge>)
         .distance(d => {
           const w = typeof d.weight === "number" ? d.weight : 0.5;
-          return params.linkDistance! + (1 - w) * 80;
+          const clampedW = Math.min(1, Math.max(-1, w));
+          const dist = params.linkDistance! + (1 - clampedW) * 80;
+          if (!Number.isFinite(dist) || dist < 0) {
+            console.error("[D3GraphPanel] non-finite/negative link distance computed, forcing fallback", { rawWeight: w, dist });
+            return 150;
+          }
+          return dist;
         });
     }
     if (params.chargeStrength !== undefined) {
