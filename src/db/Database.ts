@@ -53,6 +53,35 @@ export class Database {
                 console.log(`${LOG} Created DB directory`, dbDir);
             }
 
+            // Clean up orphaned temp files from earlier failed persists (e.g. before
+            // this cleanup logic existed, or from a session that crashed mid-persist).
+            try {
+              const dbDir = path.dirname(this.dbPath);
+              const dbBasename = path.basename(this.dbPath);
+              const entries = fs.readdirSync(dbDir);
+              const orphanedTmpFiles = entries.filter((f: string) => f.startsWith(`${dbBasename}.tmp-`));
+              if (orphanedTmpFiles.length > 0) {
+                console.warn(`${LOG} found orphaned temp files from previous failed persists — cleaning up`, {
+                  count: orphanedTmpFiles.length,
+                  files: orphanedTmpFiles,
+                });
+                for (const f of orphanedTmpFiles) {
+                  const fullTmpPath = path.join(dbDir, f);
+                  try {
+                    const size = fs.statSync(fullTmpPath).size;
+                    fs.unlinkSync(fullTmpPath);
+                    console.log(`${LOG} removed orphaned temp file`, { fullTmpPath, sizeBytes: size });
+                  } catch (e) {
+                    console.error(`${LOG} failed to remove orphaned temp file`, { fullTmpPath, e });
+                  }
+                }
+              } else {
+                console.log(`${LOG} no orphaned temp files found on startup`);
+              }
+            } catch (e) {
+              console.error(`${LOG} orphaned temp file sweep failed`, e);
+            }
+
             if (fs.existsSync(this.dbPath)) {
                 console.log(`${LOG} Loading existing DB file from`, this.dbPath);
                 const fileBuffer = fs.readFileSync(this.dbPath);
@@ -174,37 +203,70 @@ export class Database {
             console.warn(`${LOG} persist() called but DB or SQL is null — skipping`);
             return;
         }
+
+        const data = this.db.export();
+        const buffer = Buffer.from(data);
+        const tmpPath = `${this.dbPath}.tmp-${process.pid}-${Date.now()}`;
+
+        console.log('[IndexBuilder] persisting DB to disk', {
+          dbPath: this.dbPath,
+          byteLength: buffer.length,
+          tmpPath,
+        });
+
+        let renameSucceeded = false;
+
         try {
-            const data = this.db.export();
-            const buffer = Buffer.from(data);
-
-            console.log('[IndexBuilder] persisting DB to disk', {
-              dbPath: this.dbPath,
-              byteLength: buffer.length,
-            });
-
-            // Write to a temp file in the SAME directory (so renameSync stays atomic
-            // on the same volume), then atomically swap it into place. This
-            // guarantees that a crash/kill mid-write can never leave a truncated
-            // or zero-byte smart_index.db — the old file stays valid until the
-            // instant the new one is fully ready.
-            const tmpPath = `${this.dbPath}.tmp-${process.pid}-${Date.now()}`;
-            console.log(`${LOG} writing to temp file before atomic rename`, { tmpPath });
-
             fs.writeFileSync(tmpPath, buffer);
 
             const tmpStat = fs.statSync(tmpPath);
             if (tmpStat.size !== buffer.length) {
-              console.error(`${LOG} temp file size mismatch after write — aborting persist to protect existing DB`, {
+              console.error(`${LOG} temp file size mismatch after write — aborting persist`, {
                 expected: buffer.length,
                 actual: tmpStat.size,
               });
-              try { fs.unlinkSync(tmpPath); } catch (_) { /* best effort cleanup */ }
-              return;
+              return; // finally block below still cleans up tmpPath
             }
 
-            fs.renameSync(tmpPath, this.dbPath);
-            console.log(`${LOG} atomic rename complete — smart_index.db updated safely`, { dbPath: this.dbPath });
+            // Retry the rename a few times — OneDrive frequently holds a transient
+            // lock (EPERM/EBUSY) on the destination filename right after a large
+            // write while it hashes/uploads the previous version. This is a race,
+            // not a permanent failure, so back off and retry before giving up.
+            const MAX_RENAME_ATTEMPTS = 5;
+            const RETRY_DELAY_MS = 1500;
+
+            for (let attempt = 1; attempt <= MAX_RENAME_ATTEMPTS; attempt++) {
+              try {
+                fs.renameSync(tmpPath, this.dbPath);
+                renameSucceeded = true;
+                console.log(`${LOG} atomic rename complete — smart_index.db updated safely`, {
+                  dbPath: this.dbPath,
+                  attempt,
+                });
+                break;
+              } catch (renameErr) {
+                const code = (renameErr as NodeJS.ErrnoException)?.code ?? "UNKNOWN";
+                console.warn(`${LOG} rename attempt ${attempt}/${MAX_RENAME_ATTEMPTS} failed`, {
+                  code,
+                  message: (renameErr as Error).message,
+                  tmpPath,
+                  dbPath: this.dbPath,
+                });
+                if (attempt === MAX_RENAME_ATTEMPTS) {
+                  console.error(`${LOG} all rename attempts exhausted — persist failed, existing smart_index.db on disk is untouched`, { code });
+                } else {
+                  // Synchronous sleep via Atomics.wait is not available in all
+                  // Electron renderer contexts — use a blocking busy-wait via
+                  // Date.now() instead, since persist() is itself synchronous.
+                  const deadline = Date.now() + RETRY_DELAY_MS;
+                  while (Date.now() < deadline) { /* deliberate short synchronous wait */ }
+                }
+              }
+            }
+
+            if (!renameSucceeded) {
+              return; // finally block still cleans up tmpPath
+            }
 
             const stat = fs.statSync(this.dbPath);
             console.log('[IndexBuilder] persisted file stat', {
@@ -214,7 +276,6 @@ export class Database {
             });
 
             console.log('[IndexBuilder] readback verification start', { dbPath: this.dbPath });
-
             const fileBuffer = fs.readFileSync(this.dbPath);
             const verifyDb = new this.SQL.Database(fileBuffer);
 
@@ -222,7 +283,6 @@ export class Database {
                 const res = db.exec(sql);
                 return res?.[0]?.values?.[0]?.[0] as number | string ?? null;
             };
-
             const getRows = (db: SqlJsDatabase, sql: string): unknown[] => {
                 const res = db.exec(sql);
                 if (!res?.[0]) return [];
@@ -245,14 +305,22 @@ export class Database {
             });
 
             verifyDb.close();
-
             console.log(`${LOG} DB persisted to disk at`, this.dbPath);
         } catch (error) {
             console.error(`${LOG} Failed to persist DB — existing smart_index.db on disk is untouched:`, error);
-            // Note: because we write to a temp file first, an error here (e.g. disk
-            // full, OneDrive lock on the temp file) never corrupts the live DB —
-            // worst case we just fail to save this round's changes and retry next
-            // persist cycle.
+        } finally {
+            // Always attempt to remove the temp file if it's still sitting there —
+            // covers the size-mismatch return, the exhausted-retries return, and
+            // any unexpected exception path above. This is what was missing
+            // before and is why tmp files were piling up.
+            if (fs.existsSync(tmpPath)) {
+              try {
+                fs.unlinkSync(tmpPath);
+                console.log(`${LOG} cleaned up leftover temp file`, { tmpPath });
+              } catch (cleanupErr) {
+                console.error(`${LOG} failed to clean up temp file — may require manual deletion`, { tmpPath, cleanupErr });
+              }
+            }
         }
     }
 
