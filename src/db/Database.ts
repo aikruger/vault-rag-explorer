@@ -56,8 +56,18 @@ export class Database {
             if (fs.existsSync(this.dbPath)) {
                 console.log(`${LOG} Loading existing DB file from`, this.dbPath);
                 const fileBuffer = fs.readFileSync(this.dbPath);
-                this.db = new this.SQL.Database(fileBuffer);
-                console.log(`${LOG} Existing DB loaded`);
+                console.log(`${LOG} existing DB file size on disk`, { bytes: fileBuffer.length });
+                if (fileBuffer.length === 0) {
+                  console.error(`${LOG} existing DB file is 0 bytes — refusing to silently treat as fresh DB`, { dbPath: this.dbPath });
+                  throw new Error(`smart_index.db at ${this.dbPath} is 0 bytes — likely an interrupted write. Not auto-recreating to avoid silent data loss; please restore from a backup or rename the file to force a rebuild.`);
+                }
+                try {
+                  this.db = new this.SQL.Database(fileBuffer);
+                  console.log(`${LOG} Existing DB loaded`);
+                } catch (loadErr) {
+                  console.error(`${LOG} existing DB file failed to parse — likely corrupt, refusing to silently discard`, loadErr);
+                  throw loadErr;
+                }
             } else {
                 console.log(`${LOG} No existing DB found, creating new DB`);
                 this.db = new this.SQL.Database();
@@ -173,7 +183,28 @@ export class Database {
               byteLength: buffer.length,
             });
 
-            fs.writeFileSync(this.dbPath, buffer);
+            // Write to a temp file in the SAME directory (so renameSync stays atomic
+            // on the same volume), then atomically swap it into place. This
+            // guarantees that a crash/kill mid-write can never leave a truncated
+            // or zero-byte smart_index.db — the old file stays valid until the
+            // instant the new one is fully ready.
+            const tmpPath = `${this.dbPath}.tmp-${process.pid}-${Date.now()}`;
+            console.log(`${LOG} writing to temp file before atomic rename`, { tmpPath });
+
+            fs.writeFileSync(tmpPath, buffer);
+
+            const tmpStat = fs.statSync(tmpPath);
+            if (tmpStat.size !== buffer.length) {
+              console.error(`${LOG} temp file size mismatch after write — aborting persist to protect existing DB`, {
+                expected: buffer.length,
+                actual: tmpStat.size,
+              });
+              try { fs.unlinkSync(tmpPath); } catch (_) { /* best effort cleanup */ }
+              return;
+            }
+
+            fs.renameSync(tmpPath, this.dbPath);
+            console.log(`${LOG} atomic rename complete — smart_index.db updated safely`, { dbPath: this.dbPath });
 
             const stat = fs.statSync(this.dbPath);
             console.log('[IndexBuilder] persisted file stat', {
@@ -217,7 +248,11 @@ export class Database {
 
             console.log(`${LOG} DB persisted to disk at`, this.dbPath);
         } catch (error) {
-            console.error(`${LOG} Failed to persist DB:`, error);
+            console.error(`${LOG} Failed to persist DB — existing smart_index.db on disk is untouched:`, error);
+            // Note: because we write to a temp file first, an error here (e.g. disk
+            // full, OneDrive lock on the temp file) never corrupts the live DB —
+            // worst case we just fail to save this round's changes and retry next
+            // persist cycle.
         }
     }
 
