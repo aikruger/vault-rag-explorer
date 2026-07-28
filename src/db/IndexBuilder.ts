@@ -201,6 +201,22 @@ export class IndexBuilder {
       WHERE path = $path
     `);
 
+    // NEW: find any row — deleted or not — with the same hash under a DIFFERENT path.
+    // This is how we detect "this is the same file, just moved/renamed".
+    const selectByHashDifferentPath = rawDb.prepare(
+      "SELECT id, path FROM sources WHERE hash = $hash AND hash != '' AND path != $path"
+    );
+
+    // NEW: rename update — reassigns the path on the EXISTING row/id, un-deletes it,
+    // and does NOT touch blocks/embeddings since source_id never changes.
+    const renameSource = rawDb.prepare(`
+      UPDATE sources
+      SET path = $newPath, title = $title, metadata_json = $metadata_json,
+          raw_json = $raw_json, mtime = $mtime, hash = $hash,
+          is_deleted = 0, deleted_at = NULL, delete_reason = NULL
+      WHERE id = $id
+    `);
+
     const selectSourceId = rawDb.prepare(
       "SELECT id FROM sources WHERE path = $path"
     );
@@ -241,14 +257,49 @@ export class IndexBuilder {
             $hash: source.hash,
           };
 
-          if (!existing) {
+          if (existing) {
+            updateSource.run(rowParams);
+            result.sourcesUpdated++;
+            console.log(`${LOG_PREFIX} Updated existing source: ${source.path}`);
+          } else {
+            // No row at this path — before inserting fresh, check if this content
+            // (by hash) already exists somewhere else under a different path.
+            // If so, this is a RENAME, not a new file.
+          if (source.hash) {
+            selectByHashDifferentPath.bind({ $hash: source.hash, $path: source.path });
+            let renameMatch: { id: number; path: string } | undefined;
+            if (selectByHashDifferentPath.step()) {
+              renameMatch = selectByHashDifferentPath.getAsObject() as { id: number; path: string };
+            }
+            selectByHashDifferentPath.reset();
+
+            if (renameMatch) {
+              console.log(`[IndexBuilder] rename detected via hash match`, {
+                sourceId: renameMatch.id,
+                oldPath: renameMatch.path,
+                newPath: source.path,
+                hash: source.hash,
+              });
+              renameSource.run({ $id: renameMatch.id, $newPath: source.path, ...rowParams });
+              result.sourcesInserted++; // counted as a change, not a true fresh insert
+              console.log(`[IndexBuilder] rename reconciled — source_id preserved`, {
+                sourceId: renameMatch.id,
+                newPath: source.path,
+              });
+
+              // We must still write embeddings and blocks for this path in case any inner
+              // content changed (or if blocks were not previously persisted correctly).
+              // Proceed down to embeddings loop.
+            } else {
+              insertSource.run(rowParams);
+              result.sourcesInserted++;
+              console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
+            }
+          } else {
             insertSource.run(rowParams);
             result.sourcesInserted++;
             console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
-          } else {
-            updateSource.run(rowParams);
-            result.sourcesUpdated++;
-            console.log(`${LOG_PREFIX} Updated source: ${source.path}`);
+          }
           }
 
           // Write embeddings
@@ -282,6 +333,8 @@ export class IndexBuilder {
     }
 
     } finally {
+      selectByHashDifferentPath.free();
+      renameSource.free();
       selectHash.free();
       console.log('[MemoryCheck] stmt freed', { name: 'selectHash' });
       insertSource.free();

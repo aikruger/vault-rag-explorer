@@ -145,6 +145,33 @@ const insertSource = db.prepare(`
   RETURNING id
 `);
 
+const selectByHashDifferentPath = db.prepare(`
+  SELECT id, path FROM sources WHERE hash = ? AND hash != '' AND path != ? LIMIT 1
+`);
+const renameSource = db.prepare(`
+  UPDATE sources
+  SET path = ?, title = ?, metadata_json = ?, raw_json = ?, mtime = ?, hash = ?,
+      is_deleted = 0, deleted_at = NULL, delete_reason = NULL
+  WHERE id = ?
+  RETURNING id
+`);
+
+// Helper to gracefully transition renames without orphaned blocks/embeddings
+function upsertSourceWithRenameDetection(sourcePath, title, metadataJson, rawJson, mtime, hash) {
+  if (hash) {
+    const renameMatch = selectByHashDifferentPath.get(hash, sourcePath);
+    if (renameMatch) {
+      console.log('[indexer] rename detected via hash match', {
+        sourceId: renameMatch.id, oldPath: renameMatch.path, newPath: sourcePath, hash,
+      });
+      const res = renameSource.get(sourcePath, title, metadataJson, rawJson, mtime, hash, renameMatch.id);
+      console.log('[indexer] rename reconciled — source_id preserved', { sourceId: renameMatch.id, newPath: sourcePath });
+      return res;
+    }
+  }
+  return insertSource.get(sourcePath, title, metadataJson, rawJson, mtime, hash);
+}
+
 const insertBlock = db.prepare(`
   INSERT INTO blocks (source_id, block_key, block_path, block_label, line_start, line_end, text, text_length, hash, metadata_json, raw_json)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -311,7 +338,7 @@ try {
       if (!key.includes('#')) {
         const title = path.basename(key, '.md');
         const sourcePath = key; // usually the path is the key
-        const sourceRes = insertSource.get(sourcePath, title, JSON.stringify(record.metadata || {}), jsonPart, record.mtime || null, record.hash || null);
+        const sourceRes = upsertSourceWithRenameDetection(sourcePath, title, JSON.stringify(record.metadata || {}), jsonPart, record.mtime || null, record.hash || null);
         // If we revived it
         console.log(`[indexer] source revived`, { pathVal: sourcePath, filePath });
 
@@ -331,7 +358,7 @@ try {
       } else {
         const sourcePath = key.split('#')[0];
         // Ensure source exists. We might not have metadata for it.
-        const sourceRes = insertSource.get(sourcePath, path.basename(sourcePath, '.md'), "{}", "{}", null, null);
+        const sourceRes = upsertSourceWithRenameDetection(sourcePath, path.basename(sourcePath, '.md'), "{}", "{}", null, null);
         const sourceId = sourceRes ? sourceRes.id : null;
 
         if (sourceId) {
