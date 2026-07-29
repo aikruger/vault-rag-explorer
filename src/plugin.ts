@@ -140,15 +140,44 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			console.log(`${LOG_PREFIX} layout ready — detaching stale leaves then registering view`);
 			this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
-			this.registerView(
-				VIEW_TYPE_VAULT_RAG_EXPLORER,
-				(leaf: WorkspaceLeaf) => {
-					console.log(`${LOG_PREFIX} Creating view instance`);
-					this.view = new VaultRagExplorerView(leaf, this);
-					return this.view;
+			try {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const alreadyRegistered = !!(this.app as any).viewRegistry?.viewByType?.[VIEW_TYPE_VAULT_RAG_EXPLORER];
+				console.log(`${LOG_PREFIX} view type registration check`, {
+					viewType: VIEW_TYPE_VAULT_RAG_EXPLORER,
+					alreadyRegistered,
+				});
+
+				if (alreadyRegistered) {
+					// Should be rare now that onunload() explicitly unregisters — if this still
+					// fires, a previous instance's cleanup was skipped and Obsidian is serving
+					// whatever View class was registered by that PRIOR load, not this build.
+					console.error(
+						`${LOG_PREFIX} STALE VIEW REGISTRATION DETECTED — skipping registerView to avoid crash, ` +
+						`but the currently active view is from a PREVIOUS plugin load, not this build. ` +
+						`Do a full Obsidian restart (Ctrl+R / Reload app without saving) to guarantee fresh code.`
+					);
+					new Notice(
+						"Vault RAG Explorer: stale view registration detected — please fully reload Obsidian to pick up the latest build.",
+						10000
+					);
+				} else {
+					this.registerView(
+						VIEW_TYPE_VAULT_RAG_EXPLORER,
+						(leaf: WorkspaceLeaf) => {
+							console.log(`${LOG_PREFIX} Creating view instance`);
+							this.view = new VaultRagExplorerView(leaf, this);
+							return this.view;
+						}
+					);
+					console.log(`${LOG_PREFIX} registerView complete`);
 				}
-			);
-			console.log(`${LOG_PREFIX} registerView complete`);
+			} catch (err) {
+				console.error(`${LOG_PREFIX} registerView threw unexpectedly`, {
+					message: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				});
+			}
 
 			if (!this.settings.smartFolderPath.trim()) {
 				new Notice(
@@ -174,7 +203,17 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log(`${LOG_PREFIX} onunload — detaching leaves`);
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_VAULT_RAG_EXPLORER);
 
-
+		// Defensive explicit unregister — belt-and-braces alongside Obsidian's
+		// automatic this.register() cleanup, in case a hot-reload cycle skips it.
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(this.app as any).viewRegistry?.unregisterView?.(VIEW_TYPE_VAULT_RAG_EXPLORER);
+			console.log(`${LOG_PREFIX} explicit viewRegistry.unregisterView succeeded for`, VIEW_TYPE_VAULT_RAG_EXPLORER);
+		} catch (err) {
+			console.warn(`${LOG_PREFIX} explicit viewRegistry.unregisterView threw (may already be unregistered)`, {
+				message: err instanceof Error ? err.message : String(err),
+			});
+		}
 
 		if (this.ajsonWatcher) {
 			this.ajsonWatcher.stop();
