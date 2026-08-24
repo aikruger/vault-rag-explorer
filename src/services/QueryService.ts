@@ -537,7 +537,14 @@ export class QueryService {
         } else if (emb.ownerType === "block") {
           selectBlock.bind({ $id: emb.ownerId });
           if (selectBlock.step()) {
-            const row = selectBlock.getAsObject() as { block_key: string; block_label: string; text: string; block_path: string; line_start: number; line_end: number };
+            const row = selectBlock.getAsObject() as { block_key: string; block_label: string | null; text: string; block_path: string; line_start: number; line_end: number };
+
+            const safeBlockLabel = row.block_label && row.block_label.trim().length > 0
+              ? row.block_label
+              : (row.text ? row.text.trim().slice(0, 40).replace(/\s+/g, ' ') || "Untitled passage" : "Untitled passage");
+            if (!row.block_label) {
+              console.warn("[QueryService] block_label was null/empty, using text-derived fallback", { blockKey: row.block_key, fallback: safeBlockLabel });
+            }
 
             selectSourceIdByPath.bind({ $path: row.block_path });
             let srcRow: { id: number } | undefined;
@@ -551,7 +558,7 @@ export class QueryService {
               nodeId: emb.ownerId,
               sourceId: srcRow ? srcRow.id : -1,
               path: row.block_path,
-              title: row.block_label,
+              title: safeBlockLabel,
               blockKey: row.block_key,
               lineStart: row.line_start,
               lineEnd: row.line_end,

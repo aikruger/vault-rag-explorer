@@ -165,26 +165,45 @@ export class AjsonWatcherService {
       const pending = Array.from(this.plugin.pendingAjsonReindex);
       this.plugin.pendingAjsonReindex.clear();
 
+      let anyWorkDone = false;
+      let skippedCount = 0;
+
       for (const filePath of pending) {
         console.log(`${LOG} drainQueue processing file`, { filePath });
-        await this.reindexFile(filePath);
+        const didWork = await this.reindexFile(filePath);
+        if (didWork) {
+          anyWorkDone = true;
+        } else {
+          skippedCount++;
+        }
       }
 
-      console.log('[checker] persist start');
-      console.log('[checker] before persist');
-      this.db.persist();
-      console.log('[checker] after persist');
-      console.log('[checker] persist complete');
+      console.log(`${LOG} drainQueue batch summary`, {
+        totalFiles: pending.length,
+        skippedCount,
+        workDoneCount: pending.length - skippedCount,
+        willPersist: anyWorkDone,
+      });
 
-      const rawDb = this.db.getDb();
-      if (rawDb) {
-        try {
-          const res = rawDb.exec('SELECT COUNT(*) FROM sources');
-          const count = res?.[0]?.values?.[0]?.[0];
-          console.log('[checker] post-persist readback verification counts', { sources: count });
-        } catch (e) {
-          console.error('[checker] readback verification failed', e);
+      if (anyWorkDone) {
+        console.log('[checker] persist start');
+        console.log('[checker] before persist');
+        this.db.requestPersist();
+        console.log('[checker] after persist');
+        console.log('[checker] persist complete');
+
+        const rawDb = this.db.getDb();
+        if (rawDb) {
+          try {
+            const res = rawDb.exec('SELECT COUNT(*) FROM sources');
+            const count = res?.[0]?.values?.[0]?.[0];
+            console.log('[checker] post-persist readback verification counts', { sources: count });
+          } catch (e) {
+            console.error('[checker] readback verification failed', e);
+          }
         }
+      } else {
+        console.log(`${LOG} [checker] persist skipped — entire batch was a no-op (all files unchanged)`, { fileCount: pending.length });
       }
 
     } finally {
@@ -220,15 +239,16 @@ export class AjsonWatcherService {
     this.debounceTimers.set(fullFilePath, timer);
   }
 
-  private async reindexFile(fullFilePath: string): Promise<void> {
+  private async reindexFile(fullFilePath: string): Promise<boolean> {
     const fs = require("fs");
     console.log(`${LOG} reindexFile start:`, fullFilePath);
 
     // If the file was deleted, remove orphan records from the DB
     if (!fs.existsSync(fullFilePath)) {
       console.log(`${LOG} file no longer exists — running orphan cleanup for:`, fullFilePath);
-      await this.removeOrphansForFile(fullFilePath);
-      return;
+      const didDelete = await this.removeOrphansForFile(fullFilePath);
+      console.log(`${LOG} reindexFile returning`, { fullFilePath, didWork: didDelete, reason: "orphan cleanup" });
+      return didDelete;
     }
 
     // Skip if mtime is unchanged
@@ -242,11 +262,13 @@ export class AjsonWatcherService {
             const storedMtime = res[0].values[0][0] as number;
             if (storedMtime === mtime) {
                 console.log(`${LOG} [AjsonWatcher] reindex skipped - unchanged mtime`, { fullFilePath });
-                return;
+                console.log(`${LOG} reindexFile returning`, { fullFilePath, didWork: false, reason: "unchanged mtime" });
+                return false;
             }
         }
     } catch (e) {
         console.log(`${LOG} error checking mtime`, e);
+        console.log(`${LOG} mtime check failed — proceeding to reindex defensively`, { fullFilePath });
     }
 
     try {
@@ -271,12 +293,20 @@ export class AjsonWatcherService {
       }
 
       console.log(`${LOG} reindexFile complete:`, fullFilePath, result);
+      console.log(`${LOG} reindexFile returning`, { fullFilePath, didWork: true, reason: "buildFromSingleFile succeeded" });
+      return true;
     } catch (err) {
       console.error(`${LOG} reindexFile error for`, fullFilePath, err);
+      // Treat as "did work" defensively — buildFromSingleFile may have partially
+      // mutated the in-memory DB before throwing, so we persist to avoid losing
+      // whatever succeeded. This trades a slightly-too-eager persist for zero
+      // risk of silently dropping partial writes.
+      console.log(`${LOG} reindexFile returning`, { fullFilePath, didWork: true, reason: "error after possible partial write — persisting defensively" });
+      return true;
     }
   }
 
-  private async removeOrphansForFile(fullFilePath: string): Promise<void> {
+  private async removeOrphansForFile(fullFilePath: string): Promise<boolean> {
     console.log(`${LOG} removeOrphansForFile:`, fullFilePath);
     try {
       const rawDb = this.db.getDb();
@@ -286,16 +316,18 @@ export class AjsonWatcherService {
 
       console.log(`${LOG} looking up source path for deletion:`, sourcePath);
 
-      // Mark as deleted instead of hard delete
       rawDb.exec("BEGIN TRANSACTION;");
       rawDb.exec(`UPDATE sources SET is_deleted = 1, deleted_at = ${Date.now()}, delete_reason = 'watcher delete' WHERE path = '${sourcePath.replace(/'/g, "''")}'`);
       rawDb.exec(`UPDATE index_file_meta SET is_missing = 1, missing_since = ${Date.now()}, missing_reason = 'watcher delete' WHERE filepath = '${fullFilePath.replace(/'/g, "''")}'`);
       rawDb.exec("COMMIT;");
       console.log(`${LOG} orphan cleanup (soft delete) complete for source:`, sourcePath);
-      // Debounced persist to the end of drainQueue
+      console.log(`${LOG} removeOrphansForFile made DB changes — persist required`, { fullFilePath });
+      return true;
     } catch (err) {
       console.error(`${LOG} removeOrphansForFile error:`, err);
       try { this.db.getDb().exec("ROLLBACK;"); } catch (_) { /* ignore */ }
+      console.log(`${LOG} removeOrphansForFile rolled back — no persist needed`, { fullFilePath });
+      return false;
     }
   }
 }
