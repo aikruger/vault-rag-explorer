@@ -4,6 +4,7 @@ import type {
   ParsedSource,
   ParsedBlock,
   ParsedEmbedding,
+  ParseResult,
   IndexBuildResult,
 } from "../types";
 
@@ -75,8 +76,7 @@ export class IndexBuilder {
     smartEnvPath: string,
     ajsonFiles: string[]
   ): Promise<{ sources: number; blocks: number; embeddings: number }> {
-    console.log('[IndexBuilder] buildFromPath ENTER — files:', ajsonFiles.length);
-    const startTime = Date.now();
+    console.log("[IndexBuilder] buildFromPath start", { fileCount: ajsonFiles.length });
 
     const rawDb = this.db.getDb();
     if (!rawDb) {
@@ -90,7 +90,6 @@ export class IndexBuilder {
 
     let totalSources = 0;
     let totalBlocks = 0;
-    let totalEmbeddings = 0;
     let parseErrors = 0;
     const CHUNK_SIZE = 20; // files per chunk before yielding
 
@@ -98,6 +97,9 @@ export class IndexBuilder {
     const { AjsonParser } = await import("../parsers/AjsonParser");
     const parser = new AjsonParser(this.enableDebugLogging);
     const fs = require('fs');
+    const repairQueue: string[] = [];
+    const normalQueue: string[] = [];
+    let skippedByMtimeAndCompleteness = 0;
 
     const resultDummy: IndexBuildResult = {
       sourcesInserted: 0,
@@ -112,25 +114,68 @@ export class IndexBuilder {
       errors: [],
     };
 
-    for (let i = 0; i < ajsonFiles.length; i++) {
-      if (i > 0 && i % CHUNK_SIZE === 0) {
-        await new Promise(resolve => window.setTimeout(resolve, 0));
-        console.log(`[IndexBuilder] yielded at file ${i}/${ajsonFiles.length}`);
+    for (const filePath of ajsonFiles) {
+      if (!filePath) continue;
+
+      let currentMtime: number | null = null;
+      try {
+        const stat = fs.statSync(filePath);
+        currentMtime = stat.mtimeMs;
+      } catch {
+        normalQueue.push(filePath);
+        continue;
       }
 
-      const filePath = ajsonFiles[i];
+      const indexedMtime = this.getIndexedFileMtime(rawDb, filePath);
+      if (indexedMtime === null || indexedMtime !== currentMtime) {
+        normalQueue.push(filePath);
+        continue;
+      }
+
+      try {
+        const fileState = this.getIndexedFileState(rawDb, filePath, parser);
+        if (fileState.isComplete) {
+          skippedByMtimeAndCompleteness++;
+        } else {
+          repairQueue.push(filePath);
+        }
+      } catch {
+        repairQueue.push(filePath);
+      }
+    }
+
+    console.log("[IndexBuilder] queue summary", {
+      totalFiles: ajsonFiles.length,
+      repairCount: repairQueue.length,
+      normalCount: normalQueue.length,
+      skippedByMtimeAndCompleteness,
+    });
+
+    const workQueue = [...repairQueue, ...normalQueue];
+
+    for (let i = 0; i < workQueue.length; i++) {
+      if (i > 0 && i % CHUNK_SIZE === 0) {
+        await new Promise(resolve => window.setTimeout(resolve, 0));
+      }
+
+      const filePath = workQueue[i];
       if (!filePath) continue;
-      console.log(`[IndexBuilder] parsing file ${i + 1}/${ajsonFiles.length}: ${filePath}`);
+      const shouldLogFile =
+        i === 0 ||
+        i === workQueue.length - 1 ||
+        (i + 1) % 10 === 0;
+      if (shouldLogFile) {
+        console.log(`[IndexBuilder] parsing file ${i + 1}/${workQueue.length}`, { filePath });
+      }
 
       try {
         const raw = fs.readFileSync(filePath, 'utf8');
         const parsed = parser.parseContent(raw, filePath);
+        this.deleteFileRows(rawDb, filePath);
+        const stat = fs.statSync(filePath);
 
         const sourcesCount = parsed.sources.length;
         const blocksCount = parsed.blocks.length;
-        const embeddingsCount = parsed.sources.reduce((a, s) => a + s.embeddings.length, 0) + parsed.blocks.reduce((a, b) => a + b.embeddings.length, 0);
-
-        console.log(`[IndexBuilder] parsed — sources:${sourcesCount} blocks:${blocksCount} embeddings:${embeddingsCount}`);
 
         if (sourcesCount > 0) {
           this.upsertSources(rawDb, parsed.sources, false, resultDummy);
@@ -140,8 +185,7 @@ export class IndexBuilder {
           this.upsertBlocks(rawDb, parsed.blocks, false, resultDummy);
           totalBlocks += blocksCount;
         }
-        totalEmbeddings += resultDummy.embeddingsWritten; // using upsert return logic implicitly via result dummy
-        // Note: totalEmbeddings tracks *written* embeddings based on actual upsert
+        this.setIndexedFileMtime(rawDb, filePath, stat.mtimeMs);
 
       } catch (err) {
         parseErrors++;
@@ -152,25 +196,126 @@ export class IndexBuilder {
     console.log('[IndexBuilder] parse complete', {
       totalSources,
       totalBlocks,
-      totalEmbeddings,
+      totalEmbeddings: resultDummy.embeddingsWritten,
       parseErrors,
     });
 
-    if (totalEmbeddings === 0 && resultDummy.embeddingsWritten === 0 && parseErrors === 0) {
-      console.log('[IndexBuilder] WARNING — zero embeddings parsed. Checking first file manually...');
-      if (ajsonFiles.length > 0) {
-        const raw = fs.readFileSync(ajsonFiles[0], 'utf8');
-        console.log('[IndexBuilder] first file length', raw.length);
-        console.log('[IndexBuilder] first file preview', raw.slice(0, 500).replace(/\n/g, '\\n'));
-      }
-    }
-
     await new Promise(resolve => window.setTimeout(resolve, 0));
-    console.log('[IndexBuilder] yielding before db.persist() / export()');
     // We defer persistence to the caller (e.g. AjsonWatcherService or external indexer) to debounce writes.
-    console.log('[IndexBuilder] buildFromPath EXIT — embeddings:', resultDummy.embeddingsWritten);
+    console.log("[IndexBuilder] buildFromPath complete", {
+      sources: totalSources,
+      blocks: totalBlocks,
+      embeddings: resultDummy.embeddingsWritten,
+      errors: resultDummy.errors.length,
+    });
 
     return { sources: totalSources, blocks: totalBlocks, embeddings: resultDummy.embeddingsWritten };
+  }
+
+  public getIndexedFileMtime(rawDb: SqlJsDatabase, filePath: string): number | null {
+    const escapedPath = filePath.replace(/'/g, "''");
+    const res = rawDb.exec(`SELECT mtime FROM index_file_meta WHERE filepath = '${escapedPath}'`);
+    const rawValue = res?.[0]?.values?.[0]?.[0];
+    return typeof rawValue === "number" ? rawValue : null;
+  }
+
+  public setIndexedFileMtime(rawDb: SqlJsDatabase, filePath: string, mtime: number): void {
+    const escapedPath = filePath.replace(/'/g, "''");
+    rawDb.exec(`
+      INSERT INTO index_file_meta (filepath, mtime, is_missing)
+      VALUES ('${escapedPath}', ${mtime}, 0)
+      ON CONFLICT(filepath) DO UPDATE SET
+        mtime = excluded.mtime,
+        is_missing = 0,
+        missing_since = NULL,
+        missing_reason = NULL
+    `);
+  }
+
+  public getIndexedFileState(
+    rawDb: SqlJsDatabase,
+    filePath: string,
+    parserOverride?: { parseContent(raw: string, filePath: string): ParseResult }
+  ): { isComplete: boolean; expected: FileShape; actual: FileShape } {
+    const fs = require("fs");
+    const { AjsonParser } = require("../parsers/AjsonParser");
+    const parser = parserOverride ?? new AjsonParser(this.enableDebugLogging);
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = parser.parseContent(raw, filePath);
+    const expected = this.computeExpectedFileShape(parsed);
+    const actual = this.getActualFileShape(rawDb, filePath);
+
+    const isComplete =
+      expected.sourceCount === actual.sourceCount &&
+      expected.blockCount === actual.blockCount &&
+      expected.embeddingCount === actual.embeddingCount;
+
+    return { isComplete, expected, actual };
+  }
+
+  public computeExpectedFileShape(parsed: ParseResult): FileShape {
+    const embeddingCount =
+      parsed.sources.reduce((acc, source) => acc + source.embeddings.length, 0) +
+      parsed.blocks.reduce((acc, block) => acc + block.embeddings.length, 0);
+
+    return {
+      sourceCount: parsed.sources.length,
+      blockCount: parsed.blocks.length,
+      embeddingCount,
+    };
+  }
+
+  public getActualFileShape(rawDb: SqlJsDatabase, filePath: string): FileShape {
+    const logicalSourcePath = this.sourcePathFromAjsonPath(filePath).replace(/'/g, "''");
+    const sourceCount = Number(
+      getScalar(rawDb, `SELECT COUNT(*) FROM sources WHERE path = '${logicalSourcePath}'`) ?? 0
+    );
+    const blockCount = Number(
+      getScalar(rawDb, `SELECT COUNT(*) FROM blocks WHERE block_path = '${logicalSourcePath}'`) ?? 0
+    );
+    const embeddingCount = Number(
+      getScalar(rawDb, `
+        SELECT COUNT(*) FROM embeddings e
+        WHERE
+          (e.owner_type = 'source' AND e.owner_id IN (
+            SELECT id FROM sources WHERE path = '${logicalSourcePath}'
+          ))
+          OR
+          (e.owner_type = 'block' AND e.owner_id IN (
+            SELECT id FROM blocks WHERE block_path = '${logicalSourcePath}'
+          ))
+      `) ?? 0
+    );
+
+    return { sourceCount, blockCount, embeddingCount };
+  }
+
+  public deleteFileRows(rawDb: SqlJsDatabase, filePath: string): void {
+    const logicalSourcePath = this.sourcePathFromAjsonPath(filePath).replace(/'/g, "''");
+
+    rawDb.exec(`
+      DELETE FROM embeddings
+      WHERE owner_type = 'block'
+        AND owner_id IN (
+          SELECT id FROM blocks WHERE block_path = '${logicalSourcePath}'
+        )
+    `);
+    rawDb.exec(`
+      DELETE FROM embeddings
+      WHERE owner_type = 'source'
+        AND owner_id IN (
+          SELECT id FROM sources WHERE path = '${logicalSourcePath}'
+        )
+    `);
+    rawDb.exec(`DELETE FROM wikilinks WHERE src_source_id IN (SELECT id FROM sources WHERE path = '${logicalSourcePath}')`);
+    rawDb.exec(`DELETE FROM blocks WHERE block_path = '${logicalSourcePath}'`);
+    rawDb.exec(`DELETE FROM sources WHERE path = '${logicalSourcePath}'`);
+  }
+
+  private sourcePathFromAjsonPath(filePath: string): string {
+    const path = require("path");
+    const fileName = path.basename(filePath, ".ajson");
+    return `${fileName.replace(/#/g, "/")}.md`;
   }
 
   // ---------------------------------------------------------------------------
@@ -221,10 +366,15 @@ export class IndexBuilder {
       "SELECT id FROM sources WHERE path = $path"
     );
     try {
+    let insertedInMethod = 0;
+    let updatedInMethod = 0;
+    let skippedInMethod = 0;
+    let wikilinksInMethod = 0;
+    let embeddingsInMethod = 0;
 
     for (let batchStart = 0; batchStart < sources.length; batchStart += BATCH_SIZE) {
       const batch = sources.slice(batchStart, batchStart + BATCH_SIZE);
-      console.log(`${LOG_PREFIX} BEGIN source batch transaction`, {
+      console.log(`${LOG_PREFIX} source batch start`, {
         batchStart,
         batchSize: batch.length
       });
@@ -232,7 +382,6 @@ export class IndexBuilder {
       rawDb.exec("BEGIN TRANSACTION;");
       for (const source of batch) {
         try {
-          console.log(`[IndexBuilder] Upserting source`, source.path);
           selectHash.bind({ $path: source.path });
           let existing: { hash: string | null } | undefined;
           if (selectHash.step()) {
@@ -242,9 +391,7 @@ export class IndexBuilder {
 
           if (!forceRebuild && existing && existing.hash === source.hash && source.hash !== "") {
             result.sourcesSkipped++;
-            if (this.enableDebugLogging) {
-              console.log(`${LOG_PREFIX} Source unchanged, skipping: ${source.path}`);
-            }
+            skippedInMethod++;
             continue;
           }
 
@@ -260,7 +407,7 @@ export class IndexBuilder {
           if (existing) {
             updateSource.run(rowParams);
             result.sourcesUpdated++;
-            console.log(`${LOG_PREFIX} Updated existing source: ${source.path}`);
+            updatedInMethod++;
           } else {
             // No row at this path — before inserting fresh, check if this content
             // (by hash) already exists somewhere else under a different path.
@@ -274,18 +421,9 @@ export class IndexBuilder {
             selectByHashDifferentPath.reset();
 
             if (renameMatch) {
-              console.log(`[IndexBuilder] rename detected via hash match`, {
-                sourceId: renameMatch.id,
-                oldPath: renameMatch.path,
-                newPath: source.path,
-                hash: source.hash,
-              });
               renameSource.run({ $id: renameMatch.id, $newPath: source.path, ...rowParams });
               result.sourcesInserted++; // counted as a change, not a true fresh insert
-              console.log(`[IndexBuilder] rename reconciled — source_id preserved`, {
-                sourceId: renameMatch.id,
-                newPath: source.path,
-              });
+              insertedInMethod++;
 
               // We must still write embeddings and blocks for this path in case any inner
               // content changed (or if blocks were not previously persisted correctly).
@@ -293,12 +431,12 @@ export class IndexBuilder {
             } else {
               insertSource.run(rowParams);
               result.sourcesInserted++;
-              console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
+              insertedInMethod++;
             }
           } else {
             insertSource.run(rowParams);
             result.sourcesInserted++;
-            console.log(`${LOG_PREFIX} Inserted source: ${source.path}`);
+            insertedInMethod++;
           }
           }
 
@@ -308,6 +446,7 @@ export class IndexBuilder {
             const idRow = selectSourceId.getAsObject() as { id: number };
             const embCount = this.upsertEmbeddings(rawDb, "source", idRow.id, source.embeddings);
             result.embeddingsWritten += embCount;
+            embeddingsInMethod += embCount;
           }
           selectSourceId.reset();
 
@@ -317,6 +456,7 @@ export class IndexBuilder {
              const srcIdRow = selectSourceId.getAsObject() as { id: number };
              const wlCount = this.upsertWikilinks(rawDb, srcIdRow.id, source.outlinks);
              result.wikilinksWritten += wlCount;
+             wikilinksInMethod += wlCount;
           }
           selectSourceId.reset();
         } catch (e) {
@@ -326,23 +466,28 @@ export class IndexBuilder {
         }
       }
       rawDb.exec("COMMIT;");
-      console.log(`${LOG_PREFIX} COMMIT source batch transaction`, {
+      console.log(`${LOG_PREFIX} source batch complete`, {
         batchStart,
         batchSize: batch.length
       });
     }
 
+    console.log(`${LOG_PREFIX} upsertSources complete`, {
+      inserted: insertedInMethod,
+      updated: updatedInMethod,
+      skipped: skippedInMethod,
+      embeddingsWritten: embeddingsInMethod,
+      wikilinksWritten: wikilinksInMethod,
+      errors: result.errors.length,
+    });
+
     } finally {
       selectByHashDifferentPath.free();
       renameSource.free();
       selectHash.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'selectHash' });
       insertSource.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'insertSource' });
       updateSource.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'updateSource' });
       selectSourceId.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'selectSourceId' });
     }
   }
 
@@ -391,10 +536,14 @@ export class IndexBuilder {
       "SELECT id FROM blocks WHERE block_key = $block_key"
     );
     try {
+    let insertedInMethod = 0;
+    let updatedInMethod = 0;
+    let skippedInMethod = 0;
+    let embeddingsInMethod = 0;
 
     for (let batchStart = 0; batchStart < blocks.length; batchStart += BATCH_SIZE) {
       const batch = blocks.slice(batchStart, batchStart + BATCH_SIZE);
-      console.log(`${LOG_PREFIX} BEGIN block batch transaction`, {
+      console.log(`${LOG_PREFIX} block batch start`, {
         batchStart,
         batchSize: batch.length
       });
@@ -411,7 +560,6 @@ export class IndexBuilder {
             }
           } finally {
             selectSourceId.reset();
-            console.log('[MemoryCheck] stmt reset in finally', { name: 'selectSourceId', key: block.blockKey });
           }
 
           if (!srcRow) {
@@ -448,13 +596,13 @@ export class IndexBuilder {
               const storedEmbedHash = storedRaw?.last_embed?.hash ?? '';
               if (storedEmbedHash === block.embedHash && block.embedHash !== '') {
                 result.blocksSkipped++;
-                if (this.enableDebugLogging) {
-                  console.log(`${LOG_PREFIX} Block embed hash unchanged, skipping: ${block.blockKey}`);
-                }
+                skippedInMethod++;
                 continue;
               }
             } catch (e) {
-              console.warn(`${LOG_PREFIX} Could not parse raw_json for hash check: ${block.blockKey}`, e);
+              if (this.enableDebugLogging) {
+                console.warn(`${LOG_PREFIX} Could not parse raw_json for hash check: ${block.blockKey}`, e);
+              }
             }
           }
 
@@ -474,15 +622,11 @@ export class IndexBuilder {
           if (!existing) {
             insertBlock.run(rowParams);
             result.blocksInserted++;
-            if (this.enableDebugLogging) {
-              console.log(`${LOG_PREFIX} Inserted block: ${block.blockKey}`);
-            }
+            insertedInMethod++;
           } else {
             updateBlock.run(rowParams);
             result.blocksUpdated++;
-            if (this.enableDebugLogging) {
-              console.log(`${LOG_PREFIX} Updated block: ${block.blockKey}`);
-            }
+            updatedInMethod++;
           }
 
           // Write embeddings
@@ -492,6 +636,7 @@ export class IndexBuilder {
               const blockIdRow = selectBlockId.getAsObject() as { id: number };
               const embCount = this.upsertEmbeddings(rawDb, "block", blockIdRow.id, block.embeddings);
               result.embeddingsWritten += embCount;
+              embeddingsInMethod += embCount;
             }
           } finally {
             selectBlockId.reset();
@@ -503,25 +648,27 @@ export class IndexBuilder {
         }
       }
       rawDb.exec("COMMIT;");
-      console.log(`${LOG_PREFIX} COMMIT block batch transaction`, {
+      console.log(`${LOG_PREFIX} block batch complete`, {
         batchStart,
         batchSize: batch.length
       });
     }
 
+    console.log(`${LOG_PREFIX} upsertBlocks complete`, {
+      inserted: insertedInMethod,
+      updated: updatedInMethod,
+      skipped: skippedInMethod,
+      embeddingsWritten: embeddingsInMethod,
+      errors: result.errors.length,
+    });
+
     } finally {
       selectBlockHash.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'selectBlockHash' });
       selectSourceId.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'selectSourceId' });
       selectStoredHashRow.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'selectStoredHashRow' });
       insertBlock.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'insertBlock' });
       updateBlock.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'updateBlock' });
       selectBlockId.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'selectBlockId' });
     }
   }
 
@@ -554,9 +701,9 @@ export class IndexBuilder {
         embedding    = excluded.embedding
     `);
     let written = 0;
+    let failed = 0;
     try {
     for (const emb of embeddings) {
-      console.log(`[IndexBuilder] inserting embeddings batch`, { batchSize: embeddings.length, modelName: emb.modelName });
       try {
         const { blob, norm, isNormalized } = this.packEmbedding(emb.vec);
 
@@ -572,13 +719,8 @@ export class IndexBuilder {
         });
 
         written++;
-
-        if (this.enableDebugLogging) {
-          console.log(
-            `${LOG_PREFIX} Upserted embedding owner_type=${ownerType} owner_id=${ownerId} model=${emb.modelName} dim=${emb.dim} norm=${norm.toFixed(6)} is_normalized=${isNormalized}`
-          );
-        }
       } catch (e) {
+        failed++;
         console.error(
           `${LOG_PREFIX} Failed to upsert embedding owner_type=${ownerType} owner_id=${ownerId} model=${emb.modelName}: ${String(e)}`
         );
@@ -587,8 +729,15 @@ export class IndexBuilder {
 
     } finally {
       upsertEmb.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'upsertEmb' });
     }
+
+    console.log(`${LOG_PREFIX} upsertEmbeddings complete`, {
+      ownerType,
+      ownerId,
+      attempted: embeddings.length,
+      written,
+      failed,
+    });
 
     return written;
   }
@@ -616,6 +765,7 @@ export class IndexBuilder {
       "SELECT id FROM sources WHERE path = $path"
     );
     let written = 0;
+    let failed = 0;
     try {
     for (const dstPath of outlinks) {
       try {
@@ -638,13 +788,8 @@ export class IndexBuilder {
           $edge_type: "wikilink",
         });
         written++;
-
-        if (this.enableDebugLogging) {
-          console.log(
-            `${LOG_PREFIX} Wikilink: src_id=${srcSourceId} → dst=${dstPath} resolved=${!!dstRow}`
-          );
-        }
       } catch (e) {
+        failed++;
         console.error(
           `${LOG_PREFIX} Failed to insert wikilink src_id=${srcSourceId} dst=${dstPath}: ${String(e)}`
         );
@@ -653,10 +798,15 @@ export class IndexBuilder {
 
     } finally {
       insertWikilink.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'insertWikilink' });
       lookupDst.free();
-      console.log('[MemoryCheck] stmt freed', { name: 'lookupDst' });
     }
+
+    console.log(`${LOG_PREFIX} upsertWikilinks complete`, {
+      srcSourceId,
+      attempted: outlinks.length,
+      written,
+      failed,
+    });
 
     return written;
   }
@@ -683,4 +833,10 @@ export class IndexBuilder {
     const blob = Buffer.from(arr.buffer);
     return { blob, norm, isNormalized };
   }
+}
+
+interface FileShape {
+  sourceCount: number;
+  blockCount: number;
+  embeddingCount: number;
 }

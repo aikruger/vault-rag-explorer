@@ -3,6 +3,7 @@ import initSqlJs, { type Database as SqlJsDatabase, type SqlJsStatic } from "sql
 import * as path from "path";
 import * as fs from "fs";
 import { DB_SCHEMA_V1 } from "./schema";
+import type VaultRagExplorerPlugin from "../plugin";
 
 const LOG = "[Database]";
 export class Database {
@@ -10,6 +11,8 @@ export class Database {
     private SQL: SqlJsStatic | null = null;
     private dbPath: string;
     private pluginDir: string;
+    private plugin: VaultRagExplorerPlugin;
+    public loadedAt = 0;
 
     private lastPersistAt = 0;
     private persistPending = false;
@@ -23,6 +26,7 @@ export class Database {
         // manifest.dir is e.g. ".obsidian/plugins/vault-rag-explorer"
         // This is always set by Obsidian and does not rely on __dirname
         this.pluginDir = path.join(basePath, plugin.manifest.dir ?? "");
+        this.plugin = plugin as VaultRagExplorerPlugin;
 
         console.log(`${LOG} dbPath resolved to`, this.dbPath);
         console.log(`${LOG} pluginDir resolved to`, this.pluginDir);
@@ -93,6 +97,7 @@ export class Database {
                 try {
                   this.db = new this.SQL.Database(fileBuffer);
                   console.log(`${LOG} Existing DB loaded`);
+                  this.loadedAt = Date.now();
                 } catch (loadErr) {
                   console.error(`${LOG} existing DB file failed to parse — likely corrupt, refusing to silently discard`, loadErr);
                   throw loadErr;
@@ -100,6 +105,7 @@ export class Database {
             } else {
                 console.log(`${LOG} No existing DB found, creating new DB`);
                 this.db = new this.SQL.Database();
+                this.loadedAt = Date.now();
             }
 
             console.log(`${LOG} Running schema migrations`);
@@ -201,6 +207,11 @@ export class Database {
     public persist(): void {
         if (!this.db || !this.SQL) {
             console.warn(`${LOG} persist() called but DB or SQL is null — skipping`);
+            return;
+        }
+
+        if (this.plugin?.isExternalIndexerRunning?.()) {
+            console.log(`${LOG} persist() skipped — external indexer is running`);
             return;
         }
 
@@ -331,5 +342,24 @@ export class Database {
             this.db = null;
             console.log(`${LOG} DB closed`);
         }
+    }
+
+    public reload(): void {
+        if (!this.SQL) {
+            throw new Error("SQL.js not initialized; call init() before reload().");
+        }
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+        if (!fs.existsSync(this.dbPath)) {
+            this.db = new this.SQL.Database();
+            this.loadedAt = Date.now();
+            return;
+        }
+        const fileBuffer = fs.readFileSync(this.dbPath);
+        this.db = new this.SQL.Database(fileBuffer);
+        this.loadedAt = Date.now();
+        console.log(`${LOG} reload complete`, { loadedAt: this.loadedAt });
     }
 }

@@ -7,7 +7,7 @@ const LOG_PREFIX = "[VaultRagExplorerSettingTab]";
 
 export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	plugin: VaultRagExplorerPlugin;
-    private refreshInterval: NodeJS.Timeout | null = null;
+    private indexStatusTimer: NodeJS.Timeout | null = null;
     private statusEl: HTMLElement | null = null;
     private spinnerEl: HTMLElement | null = null;
     private buildBtn: ButtonComponent | null = null;
@@ -15,7 +15,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: VaultRagExplorerPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
-		console.log("[VaultRagExplorerSettingTab] ✅ Real settings tab constructed — not SampleSettingTab");
 	}
 
 	display(): void {
@@ -53,7 +52,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.smartFolderPath = value.trim();
 						await this.plugin.saveSettings();
-						console.log('[VaultRagSettings] smartFolderPath updated to:', value.trim());
 					});
 				text.inputEl.style.width = '100%';
 			})
@@ -66,10 +64,8 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 							this.display(); // re-render to show new value
 							new Notice('Smart env folder detected: ' + detected);
-							console.log('[VaultRagSettings] auto-detected smartFolderPath:', detected);
 						} else {
 							new Notice('Could not auto-detect .smart-env folder. Please enter manually.');
-							console.log('[VaultRagSettings] auto-detect failed');
 						}
 					});
 			});
@@ -95,10 +91,8 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 
 		this.refreshIndexStatus();
 
-        if (this.refreshInterval) {
-            clearInterval(this.refreshInterval);
-        }
-        this.refreshInterval = setInterval(() => {
+        this.clearIndexStatusTimer();
+        this.indexStatusTimer = setInterval(() => {
             this.refreshIndexStatus();
         }, 2000);
 
@@ -112,47 +106,55 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 		buildSetting.addButton(btn => {
             this.buildBtn = btn;
 			buildBtn = btn;
-			btn.setButtonText('Start Background Index')
+			btn.setButtonText('Build Index (External)')
 				.setCta()
 				.onClick(async () => {
 					if (!this.plugin.settings.smartFolderPath) {
 						new Notice('Please set the Smart Connections folder path first.');
 						return;
 					}
-					if (this.isExternalIndexerRunning()) {
-                        console.log('[checker] index launch denied because another writer is active');
+					if (this.plugin.isExternalIndexerRunning()) {
                         new Notice('Indexing is already running.');
                         return;
                     }
-                    console.log('[SettingTab] index button clicked');
-                    console.log('[SettingTab] external indexer launch requested');
-                    console.log('[SettingTab] spinner on');
-                    console.log('[SettingTab] button disabled while indexing');
-                    console.log('[checker] external indexer button path invoked');
-                    console.log('[checker] plugin bulk writer disabled for settings-triggered indexing');
 
-                    btn.setButtonText('Starting…').setDisabled(true);
+                    btn.setButtonText('Starting external indexer…').setDisabled(true);
                     if (this.spinnerEl) {
                         this.spinnerEl.style.display = 'inline-block';
                         this.spinnerEl.classList.add('is-running');
-                        console.log('[SettingTab] spinner state changed', { state: 'running' });
                     }
-                    console.log('[VaultRagSettings] launching external indexer');
 
 					try {
                         const child_process = require('child_process');
                         const vaultAdapter = this.app.vault.adapter as any;
                         const basePath = vaultAdapter.getBasePath();
                         const pluginDir = path.join(basePath, '.obsidian', 'plugins', this.plugin.manifest.id);
-
-                        const scriptPath = path.join(pluginDir, 'indexer', 'run-indexer.py');
-
-
+                        const dataDir = path.join(pluginDir, 'data');
+                        const progressFile = path.join(dataDir, 'index-progress.json');
+                        fs.mkdirSync(dataDir, { recursive: true });
+                        fs.writeFileSync(
+                            progressFile,
+                            JSON.stringify({
+                                status: 'running',
+                                phase: 'startup',
+                                startedAt: Date.now(),
+                                heartbeatAt: Date.now(),
+                                progressUpdatedAt: Date.now(),
+                                processedFiles: 0,
+                                totalFiles: 0,
+                                lastFile: '',
+                                sourcesInserted: 0,
+                                sourcesUpdated: 0,
+                                sourcesDeleted: 0,
+                                blocksUpserted: 0,
+                                embeddingsUpserted: 0,
+                                errors: 0,
+                                pid: null,
+                            })
+                        );
 
                         // Run detached so we don't block Obsidian
                         const nodeScriptPath = path.join(pluginDir, 'indexer', 'build-index.js');
-                        console.log('[VaultRagSettings] spawning node external indexer', nodeScriptPath);
-                        // Use node via spawn to avoid cross-platform python issues
                         const child = child_process.spawn('node', [nodeScriptPath, basePath], {
                             detached: true,
                             stdio: 'ignore',
@@ -162,13 +164,10 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
                         child.unref();
 
 						new Notice(`Background indexer launched (PID: ${child.pid})`);
-						console.log('[VaultRagSettings] index build launched', child.pid);
-
                         setTimeout(() => { this.refreshIndexStatus(); }, 2000);
 					} catch (err) {
-						btn.setButtonText('Start Background Index').setDisabled(false);
+						btn.setButtonText('Build Index (External)').setDisabled(false);
 						new Notice('Failed to launch indexer: ' + (err as Error).message);
-						console.error('[VaultRagSettings] index build launch failed', err);
 					}
 				});
 		});
@@ -184,7 +183,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.retrievalGranularity)
 					.onChange(async (value: string) => {
 						this.plugin.settings.retrievalGranularity = value as "file" | "block";
-						console.log("[VaultRagExplorerSettingTab] retrievalGranularity changed", { value });
 						await this.plugin.saveSettings();
 					})
 			);
@@ -199,7 +197,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 						const parsed = Number(value);
 						if (!Number.isFinite(parsed) || parsed <= 0) return;
 						this.plugin.settings.retrievalDocumentLimit = parsed;
-						console.log("[VaultRagExplorerSettingTab] retrievalDocumentLimit changed", { value: parsed });
 						await this.plugin.saveSettings();
 					})
 			);
@@ -214,7 +211,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 						const parsed = Number(value);
 						if (!Number.isFinite(parsed) || parsed <= 0) return;
 						this.plugin.settings.retrievalBlocksPerDocument = parsed;
-						console.log("[VaultRagExplorerSettingTab] retrievalBlocksPerDocument changed", { value: parsed });
 						await this.plugin.saveSettings();
 					})
 			);
@@ -230,7 +226,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 					.setPlaceholder(".obsidian/plugins/vault-rag-explorer/data/smart_index.db")
 					.setValue(this.plugin.settings.indexDbPath)
 					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: indexDbPath", value);
 						this.plugin.settings.indexDbPath = value.trim();
 						await this.plugin.saveSettings();
 					})
@@ -243,7 +238,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 				text
 					.setValue(this.plugin.settings.embeddingModelName)
 					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: embeddingModelName", value);
 						this.plugin.settings.embeddingModelName = value.trim();
 						await this.plugin.saveSettings();
 					})
@@ -258,7 +252,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						const parsed = Number(value);
 						if (!Number.isFinite(parsed) || parsed <= 0) return;
-						console.log("[VaultRagExplorer] Setting changed: defaultTopK", parsed);
 						this.plugin.settings.defaultTopK = parsed;
 						await this.plugin.saveSettings();
 					})
@@ -271,7 +264,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 				toggle
 					.setValue(this.plugin.settings.enableDebugLogging)
 					.onChange(async (value) => {
-						console.log("[VaultRagExplorer] Setting changed: enableDebugLogging", value);
 						this.plugin.settings.enableDebugLogging = value;
 						await this.plugin.saveSettings();
 					})
@@ -292,7 +284,6 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.ragExportFolder = value.trim();
 						await this.plugin.saveSettings();
-						console.log("[VaultRagSettings] ragExportFolder updated to:", value.trim());
 					});
 				text.inputEl.style.width = "100%";
 			})
@@ -308,53 +299,30 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
 							const exists = this.app.vault.getAbstractFileByPath(folder);
 							if (exists) {
 								new Notice(`Folder already exists: ${folder}`);
-								console.log("[VaultRagSettings] ragExportFolder already exists:", folder);
 								return;
 							}
 							await this.app.vault.createFolder(folder);
 							new Notice(`Created folder: ${folder}`);
-							console.log("[VaultRagSettings] ragExportFolder created:", folder);
 						} catch (err) {
 							new Notice("Failed to create folder: " + (err as Error).message);
-							console.error("[VaultRagSettings] ragExportFolder create failed", err);
 						}
 					});
 			});
 	}
 
     hide(): void {
-        if (this.refreshInterval) {
-            clearInterval(this.refreshInterval);
-            this.refreshInterval = null;
-        }
+        this.clearIndexStatusTimer();
     }
 
-
-    private isExternalIndexerRunning(): boolean {
-        const fs = require('fs');
-        const path = require('path');
-        const vaultAdapter = this.plugin.app.vault.adapter as any;
-        const basePath = vaultAdapter.getBasePath();
-        const pluginDir = path.join(basePath, '.obsidian', 'plugins', this.plugin.manifest.id);
-        const progressFile = path.join(pluginDir, 'data', 'index-progress.json');
-
-        if (!fs.existsSync(progressFile)) return false;
-
-        try {
-            const content = fs.readFileSync(progressFile, 'utf8');
-            const progress = JSON.parse(content);
-            const staleThreshold = 15000;
-            const heartbeatStale = (Date.now() - (progress.heartbeatAt || 0)) > staleThreshold;
-            return progress.status === 'running' && !heartbeatStale;
-        } catch (e) {
-            return false;
+    private clearIndexStatusTimer(): void {
+        if (this.indexStatusTimer) {
+            clearInterval(this.indexStatusTimer);
+            this.indexStatusTimer = null;
         }
     }
 
     private refreshIndexStatus(): void {
         if (!this.statusEl) return;
-
-        console.log('[SettingTab] refreshIndexStatus start');
 
         const vaultAdapter = this.app.vault.adapter as any;
         const basePath = vaultAdapter.getBasePath();
@@ -370,12 +338,19 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
             dbSize = stat.size;
         }
 
-        console.log('[SettingTab] db stat snapshot', { dbMtime, dbSize });
-        console.log('[checker] db mtime compared against progress freshness');
-        console.log('[checker] settings counters split active vs soft-deleted');
-        console.log('[checker] progress file found');
-
         let derivedStatusPayload = null;
+
+        if (!fs.existsSync(progressFile)) {
+            this.statusEl.setText('Status: MISSING\nNo progress file found.');
+            if (this.spinnerEl) {
+                this.spinnerEl.style.display = 'none';
+                this.spinnerEl.classList.remove('is-running');
+            }
+            if (this.buildBtn) {
+                this.buildBtn.setButtonText('Build Index (External)').setDisabled(false);
+            }
+            return;
+        }
 
         if (fs.existsSync(progressFile)) {
             try {
@@ -383,11 +358,11 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
                 const progress = JSON.parse(content);
 
                 const now = Date.now();
-                const staleThreshold = 15000; // 15 seconds
+                const staleThreshold = 10 * 60 * 1000; // 10 minutes
                 const heartbeatStale = (now - (progress.heartbeatAt || 0)) > staleThreshold;
 
-                let status = progress.status;
-                if (status === 'running') {
+                let status = String(progress.status || 'BROKEN').toUpperCase();
+                if (status === 'RUNNING') {
                     if (heartbeatStale) {
                         // Check if DB is still moving even though heartbeat is stale
                         if (dbMtime > progress.heartbeatAt) {
@@ -397,14 +372,15 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
                         }
                     }
                 }
+                if (status === 'COMPLETE' && Number(progress.errors || 0) > 0) {
+                    status = 'PARTIAL';
+                }
 
 
-        if (status === 'running') {
+        if (status === 'RUNNING') {
             if (this.spinnerEl && !this.spinnerEl.classList.contains('is-running')) {
                 this.spinnerEl.style.display = 'inline-block';
                 this.spinnerEl.classList.add('is-running');
-                console.log('[SettingTab] restored spinner state from progress file', { derivedStatus: status });
-                console.log('[SettingTab] spinner on');
             }
             if (this.buildBtn) {
                 this.buildBtn.setButtonText('Indexing…').setDisabled(true);
@@ -413,10 +389,9 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
             if (this.spinnerEl && this.spinnerEl.classList.contains('is-running')) {
                 this.spinnerEl.style.display = 'none';
                 this.spinnerEl.classList.remove('is-running');
-                console.log(`[SettingTab] spinner off - indexing ${status.toLowerCase()}`);
             }
             if (this.buildBtn && this.buildBtn.disabled) {
-                this.buildBtn.setButtonText('Start Background Index').setDisabled(false);
+                this.buildBtn.setButtonText('Build Index (External)').setDisabled(false);
             }
         }
 
@@ -424,12 +399,10 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
                 derivedStatusPayload = progress;
 
             } catch (e) {
-                console.error('[SettingTab] Failed to parse progress JSON', e);
+                this.statusEl.setText('Status: BROKEN\nProgress file is unreadable.');
+                return;
             }
         }
-
-        console.log('[SettingTab] derived status', derivedStatusPayload);
-        console.log('[checker] settings poll refreshed', { derivedStatus: derivedStatusPayload?.derivedStatus });
 
         if (!derivedStatusPayload) {
             this.statusEl.setText('Status: IDLE\nNo index build has been run yet.');
@@ -455,6 +428,7 @@ export class VaultRagExplorerSettingTab extends PluginSettingTab {
             `Soft-deleted:       ${p.softDeletedSources}`,
             `Sources Inserted:   ${p.sourcesInserted}`,
             `Sources Updated:    ${p.sourcesUpdated}`,
+            `Sources Deleted:    ${p.sourcesDeleted ?? p.sourcesSoftDeleted ?? 0}`,
             `Blocks Upserted:    ${p.blocksUpserted}`,
             `Embeddings Written: ${p.embeddingsUpserted}`,
             `Errors:             ${p.errors}`,
