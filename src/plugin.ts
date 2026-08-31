@@ -317,6 +317,34 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		return await this.indexBuilder.buildFromPath(smartEnvPath, ajsonFiles);
 	}
 
+	public isExternalIndexerRunning(): boolean {
+		const fs = require("fs");
+		const path = require("path");
+		const vaultAdapter = this.app.vault.adapter as any;
+		const basePath = vaultAdapter.getBasePath();
+		const progressFile = path.join(
+			basePath,
+			".obsidian",
+			"plugins",
+			this.manifest.id,
+			"data",
+			"index-progress.json"
+		);
+
+		if (!fs.existsSync(progressFile)) return false;
+
+		try {
+			const content = fs.readFileSync(progressFile, "utf8");
+			const progress = JSON.parse(content);
+			const heartbeatAt = Number(progress?.heartbeatAt ?? 0);
+			const isRunning = progress?.status === "running";
+			const heartbeatFresh = Date.now() - heartbeatAt < 10 * 60 * 1000;
+			return isRunning && heartbeatFresh;
+		} catch {
+			return false;
+		}
+	}
+
 	private async initialiseServices(): Promise<void> {
 		const smartFolderPath = this.getSmartFolderPath();
 
