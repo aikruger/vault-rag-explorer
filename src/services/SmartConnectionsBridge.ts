@@ -243,4 +243,44 @@ export class SmartConnectionsBridge {
 		if (!model) return null;
 		return { model_key: model.model_key || model.model_name || 'unknown', config: model.config };
 	}
+
+	public getIndexHealth(): { dimension?: number; size?: number; loaded: boolean; status: string } {
+		try {
+			const sc = this.getScPlugin();
+			const model = this.getEmbedModel(sc);
+
+			// Try to get dimension from model
+			let dimension: number | undefined;
+			if (model && (model as any).dimensions) {
+				dimension = (model as any).dimensions;
+			} else if (model && model.config && (model.config as any).dimensions) {
+				dimension = (model.config as any).dimensions;
+			}
+
+			// Try to get size from smart_env items or similar collections
+			let size: number | undefined;
+			const env = sc.smart_env ?? sc.env;
+			if (env) {
+				// Different versions of SC expose items/blocks differently
+				if ((env as any).smart_blocks && (env as any).smart_blocks.items) {
+					size = Object.keys((env as any).smart_blocks.items).length;
+				} else if ((env as any).items) {
+					size = Object.keys((env as any).items).length;
+				}
+			}
+
+			const loaded = !!model;
+
+			let status = "Healthy";
+			if (!loaded) status = "Model not loaded";
+			else if (size === 0) status = "Index empty";
+
+			const health = { dimension, size, loaded, status };
+			console.log(`${LOG_PREFIX} getIndexHealth result:`, health);
+			return health;
+		} catch (err) {
+			console.warn(`${LOG_PREFIX} getIndexHealth failed:`, err);
+			return { loaded: false, status: "Error getting health" };
+		}
+	}
 }
