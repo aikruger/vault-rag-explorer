@@ -60,6 +60,9 @@ export class QueryService {
 
     // 1. Embed query
     const queryVec = await this.embeddingService.embed(request.queryText);
+
+    // Check index health
+    const indexHealth = this.embeddingService.getIndexHealth();
     console.log(`${LOG_PREFIX} query embedded, dim=${queryVec.length}`);
 
     const scModel = this.embeddingService.getModelName();
@@ -67,6 +70,34 @@ export class QueryService {
       requestedTopK: topK,
       embeddedDim: queryVec.length,
       scModelName: scModel,
+      indexHealth
+    });
+
+    if (!indexHealth.loaded) {
+      console.warn(`[QueryService] Index health check failed: ${indexHealth.status}`);
+    }
+
+    if (!queryVec || queryVec.length === 0) {
+      throw new Error('[QueryService] Empty query vector');
+    }
+
+    if (indexHealth.dimension && queryVec.length !== indexHealth.dimension) {
+      throw new Error(`[QueryService] Query vector dimension mismatch: expected ${indexHealth.dimension}, got ${queryVec.length}`);
+    }
+
+    if (!Number.isInteger(topK) || topK <= 0) {
+      throw new Error(`[QueryService] Invalid topK: ${topK}`);
+    }
+
+    if (indexHealth.size !== undefined && topK > indexHealth.size) {
+      console.warn(`[QueryService] topK (${topK}) is greater than index size (${indexHealth.size})`);
+    }
+
+    console.log('[QueryService] Calling Smart Connections scoreAndRank (internal DB) with:', {
+      queryVectorLength: queryVec.length,
+      topK,
+      filter: JSON.stringify(request.options),
+      indexMeta: { dimension: indexHealth.dimension, size: indexHealth.size, loaded: indexHealth.loaded }
     });
 
     const searchPart = modelName.split('/')[1];
@@ -100,7 +131,19 @@ export class QueryService {
     // Score and rank uses the internal block fetch limit if it's file mode
     // (though scoreAndRank currently blends blocks and sources).
     // For file-first aggregation, we fetch blocks.
-    const hits = this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options);
+    let hits;
+    try {
+      hits = this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options);
+    } catch (err: any) {
+      console.error('[QueryService] scoreAndRank failed:', {
+        queryVectorLength: queryVec.length,
+        topK,
+        filter: request.options,
+        error: err.message,
+        stack: err.stack
+      });
+      throw new Error(`[QueryService] query failed: ${err.message}`);
+    }
 
     const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
 
@@ -315,18 +358,26 @@ export class QueryService {
       });
       sql += ` AND (${clauses.join(' OR ')})`;
     }
-    if (options.createdAfter !== null) {
+    if (options.createdAfter !== null && options.createdAfter !== undefined) {
       params[`$createdAfter`] = options.createdAfter;
       sql += ` AND mtime >= $createdAfter`;
     }
-    if (options.createdBefore !== null) {
+    if (options.createdBefore !== null && options.createdBefore !== undefined) {
       params[`$createdBefore`] = options.createdBefore;
       sql += ` AND mtime <= $createdBefore`;
     }
 
-    console.log(`[QueryService] Scope SQL: ${sql}`, params);
+    // Clean out any undefined values that would cause sql.js 'bad parameter or other API misuse' errors
+    const safeParams: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) {
+        safeParams[key] = value;
+      }
+    }
+
+    console.log(`[QueryService] Scope SQL: ${sql}`, safeParams);
     const stmt = rawDbFilter.prepare(sql);
-    stmt.bind(params as import("sql.js").BindParams);
+    stmt.bind(safeParams as import("sql.js").BindParams);
     allowedSourceIds = new Set<number>();
     while (stmt.step()) {
 		const row = stmt.getAsObject() as { id: number; path: string; metadata_json: string };

@@ -9,6 +9,7 @@ import { Editor, MarkdownView, Notice } from "obsidian";
 import type VaultRagExplorerPlugin from "../plugin";
 import { VIEW_TYPE_VAULT_RAG_EXPLORER } from "../types";
 import { VaultRagExplorerView } from "../views/VaultRagExplorerView";
+import { registerDiagnosticCommand } from "./DiagnosticCommand";
 
 export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 	console.log("[VaultRagExplorer] Registering commands");
@@ -543,6 +544,9 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				}
 			}
 		});
+
+		// Register the new diagnostic command
+		registerDiagnosticCommand(plugin);
 
 	console.log("[VaultRagExplorer] Commands registered");
 }
