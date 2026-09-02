@@ -17,6 +17,8 @@ export class Database {
     private lastPersistAt = 0;
     private persistPending = false;
     private readonly PERSIST_MIN_INTERVAL_MS = 10_000; // don't do a full export/write more than once per 10s
+    private persistPromise: Promise<void> | null = null;
+    private writeQueue: Promise<void> = Promise.resolve();
 
     constructor(app: App, dbRelPath: string, plugin: Plugin) {
         const basePath = (app.vault.adapter as import("obsidian").FileSystemAdapter).getBasePath();
@@ -177,31 +179,72 @@ export class Database {
      * real disk write per PERSIST_MIN_INTERVAL_MS, while still flushing any
      * pending write shortly after the window closes so nothing is lost.
      */
-    public requestPersist(): void {
+    public requestPersist(): Promise<void> {
         const now = Date.now();
         const elapsed = now - this.lastPersistAt;
 
         if (elapsed >= this.PERSIST_MIN_INTERVAL_MS) {
             console.log(`${LOG} requestPersist — throttle window elapsed, persisting immediately`, { elapsed });
             this.lastPersistAt = now;
-            this.persist();
-            return;
+            return this.executePersistChain();
         }
 
         if (this.persistPending) {
-            console.log(`${LOG} requestPersist — persist already scheduled, skipping duplicate schedule`);
-            return;
+            console.log(`${LOG} requestPersist — persist already scheduled, chaining to existing promise`);
+            return this.persistPromise ?? Promise.resolve();
         }
 
         const waitMs = this.PERSIST_MIN_INTERVAL_MS - elapsed;
         console.log(`${LOG} requestPersist — throttled, scheduling deferred persist`, { waitMs });
         this.persistPending = true;
-        window.setTimeout(() => {
-            this.persistPending = false;
-            this.lastPersistAt = Date.now();
-            console.log(`${LOG} requestPersist — deferred persist firing now`);
+
+        this.persistPromise = (this.persistPromise ?? Promise.resolve()).then(() => {
+            return new Promise<void>((resolve, reject) => {
+                window.setTimeout(() => {
+                    this.persistPending = false;
+                    this.lastPersistAt = Date.now();
+                    console.log(`${LOG} requestPersist — deferred persist firing now`);
+
+                    this.enqueueWrite(() => {
+                        this.persist();
+                    }).then(resolve).catch(reject);
+                }, waitMs);
+            });
+        }).catch((error) => {
+            console.error(`${LOG} queued persistence failed`, { error });
+            throw error;
+        });
+
+        return this.persistPromise;
+    }
+
+    public enqueueWrite<T>(operation: () => Promise<T> | T): Promise<T> {
+        const result = this.writeQueue.then(async () => {
+            console.log(`${LOG} write queued`, { operation: operation.name || "anonymous" });
+            console.log(`${LOG} write started`, { operation: operation.name || "anonymous" });
+            try {
+                const res = await operation();
+                console.log(`${LOG} write completed`, { operation: operation.name || "anonymous" });
+                return res;
+            } catch (error) {
+                console.error(`${LOG} write failed`, { operation: operation.name || "anonymous", error });
+                throw error;
+            }
+        });
+
+        this.writeQueue = result.then(
+            () => undefined,
+            () => undefined,
+        );
+
+        return result;
+    }
+
+    private executePersistChain(): Promise<void> {
+        this.persistPromise = this.enqueueWrite(() => {
             this.persist();
-        }, waitMs);
+        });
+        return this.persistPromise;
     }
 
     public persist(): void {

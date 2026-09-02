@@ -51,7 +51,7 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public pendingAjsonReindex = new Set<string>();
 	public reindexDrainScheduled = false;
 
-	beginQuery(): void {
+	beginQuery(): () => void {
 		console.log("[VaultRagExplorerPlugin] beginQuery", {
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
@@ -60,6 +60,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		console.log("[VaultRagExplorerPlugin] beginQuery complete", {
 			activeQueryCount: this.activeQueryCount,
 		});
+
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.endQuery();
+		};
 	}
 
 	endQuery(): void {
@@ -68,6 +75,17 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 		});
+
+		if (this.activeQueryCount === 0 && this.pendingAjsonReindex.size > 0 && !this.reindexDrainScheduled) {
+			console.log(`${LOG_PREFIX} draining deferred watcher events after query end`);
+			// The watcher method scheduleDrain is private but we can poke the public property
+			// to trigger a drain, or better yet, since the AjsonWatcherService has a private method,
+			// let's add a public method or just tell it to drain.
+			// actually we will call ajsonWatcher.triggerDrain() - let's add that to AjsonWatcherService
+			if (this.ajsonWatcher) {
+				this.ajsonWatcher.triggerDrain();
+			}
+		}
 	}
 
 	beginIndexing(): boolean {

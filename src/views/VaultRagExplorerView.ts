@@ -156,6 +156,12 @@ export class VaultRagExplorerView extends ItemView {
 		if (this.queryInputEl && this.queryInputEl.value !== state.currentQueryText) {
 			this.queryInputEl.value = state.currentQueryText;
 		}
+
+		if (state.indexingError) {
+			new Notice(`Indexing error: ${state.indexingError}`);
+			// Clear it after displaying to avoid repeatedly showing it
+			this.store.setState({ indexingError: undefined });
+		}
 	}
 
 
@@ -380,22 +386,43 @@ export class VaultRagExplorerView extends ItemView {
 			});
 
 			if (this.plugin.isIndexing) {
-				console.log("[VaultRagExplorerView] query click blocked — indexing in progress");
-				new Notice("Vault RAG Explorer is updating the index. Please wait a moment.");
+				console.log("[VaultRagExplorerView] query blocked — indexing in progress");
+				new Notice("Indexing is still in progress. Try again shortly.");
 				return;
 			}
 
-			console.log("[VaultRagExplorerView] query submit start");
+			const state = this.store.getState();
+			const queryText = state.currentQueryText.trim();
+			if (!queryText) {
+				console.warn("[VaultRagExplorerView] Empty query blocked");
+				new Notice("Enter a query first");
+				return;
+			}
+
 			runBtn.setAttr("disabled", "true");
 			runBtn.empty();
 			runBtn.createSpan({ cls: "loading-spinner" });
 			runBtn.createSpan({ text: " Running…" });
-			console.log("[VaultRagExplorerView] runQuery started — spinner shown");
+
+			const releaseQuery = this.plugin.beginQuery();
 			try {
+				console.log("[VaultRagExplorerView] query started", {
+					queryLength: queryText.length,
+				});
+
 				await this.runQuery();
 			} catch (error) {
-				console.error("[VaultRagExplorerView] Query failed", error);
+				console.error("[VaultRagExplorerView] query failed", {
+					error,
+					queryLength: queryText.length,
+				});
+				new Notice(
+					error instanceof Error
+						? `RAG query failed: ${error.message}`
+						: "RAG query failed."
+				);
 			} finally {
+				releaseQuery();
 				runBtn.removeAttribute("disabled");
 				runBtn.empty();
 				runBtn.setText("Run Query");
@@ -791,9 +818,7 @@ export class VaultRagExplorerView extends ItemView {
 		});
 
 		if (!query) {
-			new Notice("Enter a query first");
-
-		console.warn("[VaultRagExplorerView] Empty query blocked");
+			console.warn("[VaultRagExplorerView] Empty query blocked in runQuery");
 			return;
 		}
 
@@ -808,16 +833,19 @@ export class VaultRagExplorerView extends ItemView {
 			return;
 		}
 
-		try {
-			const response = await this.queryService.runQuery({
-				queryText: query,
-				options: {
-					...state.queryOptions,
-					preFilterOptions: this.preFilter,
-					granularityOverride: effectiveGranularity,
-					retrievalCountOverride: effectiveRetrievalCount,
-				},
-			});
+		const response = await this.queryService.runQuery({
+			queryText: query,
+			options: {
+				...state.queryOptions,
+				preFilterOptions: this.preFilter,
+				granularityOverride: effectiveGranularity,
+				retrievalCountOverride: effectiveRetrievalCount,
+			},
+		});
+
+		console.log("[VaultRagExplorerView] query completed", {
+			resultCount: response.hits?.length ?? 0,
+		});
 
 			this.store.setState({ queryResponse: response });
 
@@ -875,12 +903,6 @@ export class VaultRagExplorerView extends ItemView {
 			new Notice(`Query complete: ${response.hits.length} hits`);
 
 		console.log("[VaultRagExplorerView] Query complete", { hitCount: response.hits.length });
-		} catch (error) {
-
-		console.error("[VaultRagExplorerView] Query failed", error);
-			new Notice("Query failed. Check console for details.");
-			throw error;
-		}
 	}
 
 	public excludeFile(sourceId: number, path: string): void {
