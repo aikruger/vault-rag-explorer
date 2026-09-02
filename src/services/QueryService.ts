@@ -4,6 +4,7 @@ import type { SmartConnectionsBridge } from "./SmartConnectionsBridge";
 import type { EmbeddingReader } from "../db/EmbeddingReader";
 import type { PreFilterService, PreFilterOptions } from "./PreFilterService";
 import type VaultRagExplorerPlugin from "../plugin";
+import { normaliseSqlParameter } from "../db/sqlite-helpers";
 
 const LOG_PREFIX = "[QueryService]";
 
@@ -51,9 +52,28 @@ export class QueryService {
         queryTextLength: request.queryText?.length ?? 0,
       });
 
-      if (this.plugin.isIndexing) {
-        console.log(`${LOG_PREFIX} runQuery abort — indexing in progress`);
-        throw new Error("Index update in progress. Retry the query in a moment.");
+      console.log("[QueryService] runQuery concurrency check", {
+        isIndexing: this.plugin.isIndexing,
+        activeQueryCount: this.plugin.activeQueryCount,
+      });
+
+      if (this.plugin.isIndexing || this.plugin.activeQueryCount > 1) {
+        console.log(`${LOG_PREFIX} runQuery abort — indexing in progress or overlapping queries`);
+        throw new Error("[QueryService] query rejected: indexing in progress");
+      }
+
+      console.log("[QueryService] runQuery pre-flight DB check");
+      try {
+        const rawDb = this.db.getDb();
+        const res = rawDb.exec("SELECT COUNT(*) FROM sources WHERE COALESCE(is_deleted, 0) = 0");
+        const sourceCount = res?.[0]?.values?.[0]?.[0] as number ?? 0;
+
+        console.log("[QueryService] DB health check passed", {
+          sourceCount,
+        });
+      } catch (error) {
+        console.error("[QueryService] DB health check failed", { error });
+        throw new Error("[QueryService] database not ready for queries");
       }
 
       // 1. Embed query
@@ -133,7 +153,7 @@ export class QueryService {
     // For file-first aggregation, we fetch blocks.
     let hits;
     try {
-      hits = this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options);
+      hits = await this.db.enqueueRead(() => this.scoreAndRank(queryVec, modelName, internalBlockFetchLimit, wikilinkBoostEnabled, request.options));
     } catch (err: any) {
       console.error('[QueryService] scoreAndRank failed:', {
         queryVectorLength: queryVec.length,
@@ -142,7 +162,7 @@ export class QueryService {
         error: err.message,
         stack: err.stack
       });
-      throw new Error(`[QueryService] query failed: ${err.message}`);
+      throw new Error(`[QueryService] scoreAndRank failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
@@ -200,7 +220,7 @@ export class QueryService {
       ? Math.max(retrievalCount * 6, retrievalCount * blocksPerDocument)
       : retrievalCount;
 
-    const hits = this.scoreAndRank(seedEmb.vec, modelName, Math.max(topK, internalBlockFetchLimit), true, queryOptions);
+    const hits = await this.db.enqueueRead(() => this.scoreAndRank(seedEmb.vec, modelName, Math.max(topK, internalBlockFetchLimit), true, queryOptions));
     const payload = this.buildPayloadFromHits(hits, granularity, retrievalCount, blocksPerDocument);
 
     return {
@@ -320,6 +340,31 @@ export class QueryService {
     wikilinkBoostEnabled: boolean,
     options: import("../types").QueryOptions
   ): RetrievalHit[] {
+    console.log("[QueryService] scoreAndRank called", {
+      queryVecLength: queryVec?.length,
+      modelName,
+      topK,
+      options,
+    });
+
+    if (!queryVec || !(queryVec instanceof Float32Array)) {
+      throw new TypeError("[QueryService] queryVec must be a Float32Array");
+    }
+
+    if (typeof topK !== "number" || !Number.isFinite(topK) || topK <= 0) {
+      throw new TypeError("[QueryService] topK must be a positive finite number");
+    }
+
+    if (typeof modelName !== "string" || modelName.trim() === "") {
+      throw new TypeError("[QueryService] modelName must be a non-empty string");
+    }
+
+    console.log("[QueryService] scoreAndRank using database", {
+      dbExists: !!this.db,
+      dbIsOpen: !!this.db?.getDb(),
+    });
+
+    try {
 
   // --- Build allowed source path set from SQL pre-filter ---
   let rawDbFilter = this.db.getDb();
@@ -368,14 +413,19 @@ export class QueryService {
     }
 
     // Clean out any undefined values that would cause sql.js 'bad parameter or other API misuse' errors
-    const safeParams: Record<string, unknown> = {};
+    const safeParams: Record<string, import("../db/sqlite-helpers").SqlJsParameter> = {};
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined) {
-        safeParams[key] = value;
+        safeParams[key] = normaliseSqlParameter(value);
       }
     }
 
-    console.log(`[QueryService] Scope SQL: ${sql}`, safeParams);
+    console.log("[QueryService] executing scoreAndRank SQL", {
+      sql,
+      parameterCount: Object.keys(safeParams).length,
+      parameterTypes: Object.values(safeParams).map((p) => (p === null ? "null" : typeof p)),
+    });
+
     const stmt = rawDbFilter.prepare(sql);
     stmt.bind(safeParams as import("sql.js").BindParams);
     allowedSourceIds = new Set<number>();
@@ -634,6 +684,17 @@ export class QueryService {
       selectBlock.free();
       selectSourceIdByPath.free();
       console.log("[QueryService] selectSource, selectBlock, selectSourceIdByPath freed");
+    }
+    } catch (error) {
+      console.error("[QueryService] scoreAndRank failed", {
+        error,
+        queryVecLength: queryVec?.length,
+        modelName,
+        topK,
+      });
+      throw new Error(
+        `[QueryService] scoreAndRank failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 }

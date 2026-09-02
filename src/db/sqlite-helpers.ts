@@ -1,4 +1,6 @@
-export function normaliseSqlParameter(value: unknown): string | number | null | Uint8Array {
+export type SqlJsParameter = string | number | null | Uint8Array;
+
+export function normaliseSqlParameter(value: unknown): SqlJsParameter {
   if (value === undefined || value === null) return null;
   if (typeof value === "string" || typeof value === "number") return value;
   if (typeof value === "boolean") return value ? 1 : 0;

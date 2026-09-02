@@ -412,9 +412,11 @@ export class VaultRagExplorerView extends ItemView {
 
 				await this.runQuery();
 			} catch (error) {
-				console.error("[VaultRagExplorerView] query failed", {
+				console.error("[VaultRagExplorerView] Query failed", {
 					error,
-					queryLength: queryText.length,
+					queryTextLength: queryText.length,
+					isIndexing: this.plugin.isIndexing,
+					activeQueryCount: this.plugin.activeQueryCount,
 				});
 				new Notice(
 					error instanceof Error

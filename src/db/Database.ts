@@ -19,6 +19,7 @@ export class Database {
     private readonly PERSIST_MIN_INTERVAL_MS = 10_000; // don't do a full export/write more than once per 10s
     private persistPromise: Promise<void> | null = null;
     private writeQueue: Promise<void> = Promise.resolve();
+    private readQueue: Promise<void> = Promise.resolve();
 
     constructor(app: App, dbRelPath: string, plugin: Plugin) {
         const basePath = (app.vault.adapter as import("obsidian").FileSystemAdapter).getBasePath();
@@ -161,6 +162,7 @@ export class Database {
 
             this.persist();
             console.log(`${LOG} DB initialized successfully at`, this.dbPath);
+            console.log("[Database] open called");
         } catch (error) {
             console.error(`${LOG} Failed to initialize DB:`, error);
             throw error;
@@ -216,6 +218,28 @@ export class Database {
         });
 
         return this.persistPromise;
+    }
+
+    public enqueueRead<T>(operation: () => Promise<T> | T): Promise<T> {
+        const result = this.readQueue.then(async () => {
+            console.log(`${LOG} read queued`, { operation: operation.name || "anonymous" });
+            console.log(`${LOG} read started`, { operation: operation.name || "anonymous" });
+            try {
+                const res = await operation();
+                console.log(`${LOG} read completed`, { operation: operation.name || "anonymous" });
+                return res;
+            } catch (error) {
+                console.error(`${LOG} read failed`, { operation: operation.name || "anonymous", error });
+                throw error;
+            }
+        });
+
+        this.readQueue = result.then(
+            () => undefined,
+            () => undefined,
+        );
+
+        return result;
     }
 
     public enqueueWrite<T>(operation: () => Promise<T> | T): Promise<T> {
@@ -379,6 +403,7 @@ export class Database {
     }
 
     public close(): void {
+        console.log("[Database] close called");
         if (this.db) {
             this.persist();
             this.db.close();
