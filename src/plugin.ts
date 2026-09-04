@@ -53,12 +53,12 @@ export default class VaultRagExplorerPlugin extends Plugin {
 
 	beginQuery(): () => void {
 		console.log("[VaultRagExplorerPlugin] beginQuery", {
-			activeQueryCount: this.activeQueryCount,
+			activeQueryCountBefore: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 		});
 		this.activeQueryCount += 1;
 		console.log("[VaultRagExplorerPlugin] beginQuery complete", {
-			activeQueryCount: this.activeQueryCount,
+			activeQueryCountAfter: this.activeQueryCount,
 		});
 
 		let released = false;
@@ -70,10 +70,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	}
 
 	endQuery(): void {
-		this.activeQueryCount = Math.max(0, this.activeQueryCount - 1);
 		console.log("[VaultRagExplorerPlugin] endQuery", {
-			activeQueryCount: this.activeQueryCount,
+			activeQueryCountBefore: this.activeQueryCount,
 			isIndexing: this.isIndexing,
+		});
+		this.activeQueryCount = Math.max(0, this.activeQueryCount - 1);
+		console.log("[VaultRagExplorerPlugin] endQuery complete", {
+			activeQueryCountAfter: this.activeQueryCount,
 		});
 
 		if (this.activeQueryCount === 0 && this.pendingAjsonReindex.size > 0 && !this.reindexDrainScheduled) {
@@ -103,7 +106,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			});
 			return false;
 		}
+		console.log("[AjsonWatcherService] starting indexing", {
+			isIndexingBefore: this.isIndexing,
+		});
 		this.isIndexing = true;
+		console.log("[AjsonWatcherService] indexing started", {
+			isIndexingAfter: this.isIndexing,
+		});
 		console.log("[VaultRagExplorerPlugin] beginIndexing granted", {
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
@@ -112,10 +121,15 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	}
 
 	endIndexing(): void {
+		console.log("[AjsonWatcherService] ending indexing", {
+			isIndexingBefore: this.isIndexing,
+		});
 		this.isIndexing = false;
+		console.log("[AjsonWatcherService] indexing ended", {
+			isIndexingAfter: this.isIndexing,
+		});
 		console.log("[checker] lock release");
 		console.log("[VaultRagExplorerPlugin] endIndexing", {
-
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 			pendingCount: this.pendingAjsonReindex.size,

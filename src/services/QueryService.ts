@@ -57,9 +57,23 @@ export class QueryService {
         activeQueryCount: this.plugin.activeQueryCount,
       });
 
-      if (this.plugin.isIndexing || this.plugin.activeQueryCount > 1) {
-        console.log(`${LOG_PREFIX} runQuery abort — indexing in progress or overlapping queries`);
+      if (this.plugin.isIndexing) {
+        console.log("[QueryService] query rejected: indexing in progress", {
+          isIndexing: this.plugin.isIndexing,
+          activeQueryCount: this.plugin.activeQueryCount,
+        });
         throw new Error("[QueryService] query rejected: indexing in progress");
+      }
+
+      const maxConcurrentQueries = 1;
+      // Note: activeQueryCount is incremented by beginQuery() before this is called,
+      // so 1 means exactly this current query.
+      if (this.plugin.activeQueryCount > maxConcurrentQueries) {
+        console.log("[QueryService] query rejected: too many concurrent queries", {
+          activeQueryCount: this.plugin.activeQueryCount,
+          maxConcurrentQueries,
+        });
+        throw new Error("[QueryService] query rejected: another query is already running");
       }
 
       console.log("[QueryService] runQuery pre-flight DB check");
