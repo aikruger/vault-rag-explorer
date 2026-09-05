@@ -50,10 +50,19 @@ export class AjsonWatcherService {
         { persistent: false },
         (eventType: string, filename: string | null) => {
           if (!filename) return;
-          if (!filename.endsWith(".ajson")) return;
-          console.log(`${LOG} .ajson change detected`, { eventType, filename });
 
           const fullPath = path.join(ajsonFolderPath, filename);
+          const isAjsonFile = fullPath.toLowerCase().endsWith(".ajson");
+
+          if (isAjsonFile) {
+            console.log(`${LOG} ignoring generated .ajson file`, {
+              fullFilePath: fullPath,
+              reason: "generated Smart Connections artefact",
+            });
+            return;
+          }
+
+          console.log(`${LOG} file change detected`, { eventType, filename });
           this.scheduleReindex(fullPath);
         }
       );
@@ -96,6 +105,10 @@ export class AjsonWatcherService {
     return this.isRunning;
   }
 
+  public triggerDrain(): void {
+    this.scheduleDrain();
+  }
+
   // ---------------------------------------------------------------------------
   // Private
   // ---------------------------------------------------------------------------
@@ -131,28 +144,73 @@ export class AjsonWatcherService {
       const pending = Array.from(this.plugin.pendingAjsonReindex);
       this.plugin.pendingAjsonReindex.clear();
 
-      let anyWorkDone = false;
-      let skippedCount = 0;
+      type ReindexSummary = {
+        totalFiles: number;
+        skippedCount: number;
+        successCount: number;
+        failedCount: number;
+        failedFiles: Array<{
+          path: string;
+          error: string;
+        }>;
+        willPersist: boolean;
+      };
+
+      const summary: ReindexSummary = {
+        totalFiles: pending.length,
+        skippedCount: 0,
+        successCount: 0,
+        failedCount: 0,
+        failedFiles: [],
+        willPersist: false,
+      };
 
       for (const filePath of pending) {
-        const didWork = await this.reindexFile(filePath);
-        if (didWork) {
-          anyWorkDone = true;
-        } else {
-          skippedCount++;
+        try {
+          const didWork = await this.reindexFile(filePath);
+          if (didWork) {
+            summary.successCount++;
+          } else {
+            summary.skippedCount++;
+          }
+        } catch (error) {
+          summary.failedCount++;
+          summary.failedFiles.push({
+            path: filePath,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          console.error(`${LOG} file reindex failed`, {
+            filePath,
+            error,
+          });
         }
       }
 
-      console.log(`${LOG} drainQueue summary`, {
-        totalFiles: pending.length,
-        skippedCount,
-        workDoneCount: pending.length - skippedCount,
-        willPersist: anyWorkDone,
-      });
+      summary.willPersist =
+        summary.successCount > 0 &&
+        summary.failedCount === 0;
 
-      if (anyWorkDone) {
+      console.log(`${LOG} drainQueue summary`, summary);
+
+      if (summary.willPersist) {
         if (!this.plugin.isExternalIndexerRunning()) {
-          this.db.requestPersist();
+          try {
+            await this.db.requestPersist();
+          } catch (error) {
+            console.error(`${LOG} persistence failed`, {
+              error,
+            });
+            if (this.plugin.view?.store) {
+              this.plugin.view.store.setState({
+                indexingError: error instanceof Error
+                  ? error.message
+                  : String(error),
+              });
+            }
+
+            throw error;
+          }
         } else {
           console.log(`${LOG} persist skipped — external indexer active`);
         }
@@ -183,6 +241,14 @@ export class AjsonWatcherService {
    * resets the timer, so we only fire after DEBOUNCE_MS of silence.
    */
   private scheduleReindex(fullFilePath: string): void {
+    if (this.plugin.activeQueryCount > 0) {
+      console.log(`${LOG} deferring change — query active`, {
+        fullFilePath,
+      });
+      this.plugin.pendingAjsonReindex.add(fullFilePath);
+      return;
+    }
+
     const existing = this.debounceTimers.get(fullFilePath);
     if (existing) {
       clearTimeout(existing);
@@ -202,7 +268,7 @@ export class AjsonWatcherService {
 
     // If the file was deleted, remove orphan records from the DB
     if (!fs.existsSync(fullFilePath)) {
-      const didDelete = await this.removeOrphansForFile(fullFilePath);
+      const didDelete = await this.db.enqueueWrite(() => this.removeOrphansForFile(fullFilePath));
       return didDelete;
     }
 
@@ -224,37 +290,30 @@ export class AjsonWatcherService {
         console.warn(`${LOG} mtime check failed — proceeding to reindex`, { fullFilePath, error: e });
     }
 
-    try {
-      const result = await this.indexBuilder.buildFromSingleFile(
-        this.watchPath,
-        fullFilePath
-      );
+    const result = await this.db.enqueueWrite(() => this.indexBuilder.buildFromSingleFile(
+      this.watchPath,
+      fullFilePath
+    ));
 
-      // Update mtime
-      try {
-          const stat = fs.statSync(fullFilePath);
-          const mtime = stat.mtimeMs;
+    // Update mtime
+    try {
+        const stat = fs.statSync(fullFilePath);
+        const mtime = stat.mtimeMs;
+        await this.db.enqueueWrite(() => {
           const rawDb = this.db.getDb();
           rawDb.exec(`
               INSERT INTO index_file_meta (filepath, mtime, is_missing)
               VALUES ('${fullFilePath.replace(/'/g, "''")}', ${mtime}, 0)
               ON CONFLICT(filepath) DO UPDATE SET mtime = ${mtime}, is_missing = 0
           `);
-          // Debounced persist to the end of drainQueue
-      } catch (e) {
-          console.error("Failed to update mtime", e);
-      }
-
-      console.log(`${LOG} reindex complete`, { fullFilePath, result });
-      return true;
-    } catch (err) {
-      console.error(`${LOG} reindexFile error for`, fullFilePath, err);
-      // Treat as "did work" defensively — buildFromSingleFile may have partially
-      // mutated the in-memory DB before throwing, so we persist to avoid losing
-      // whatever succeeded. This trades a slightly-too-eager persist for zero
-      // risk of silently dropping partial writes.
-      return true;
+        });
+        // Debounced persist to the end of drainQueue
+    } catch (e) {
+        console.error("Failed to update mtime", e);
     }
+
+    console.log(`${LOG} reindex complete`, { fullFilePath, result });
+    return true;
   }
 
   private async removeOrphansForFile(fullFilePath: string): Promise<boolean> {

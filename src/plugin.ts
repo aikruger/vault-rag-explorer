@@ -51,23 +51,51 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	public pendingAjsonReindex = new Set<string>();
 	public reindexDrainScheduled = false;
 
-	beginQuery(): void {
+	beginQuery(): () => void {
 		console.log("[VaultRagExplorerPlugin] beginQuery", {
-			activeQueryCount: this.activeQueryCount,
+			activeQueryCountBefore: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 		});
 		this.activeQueryCount += 1;
 		console.log("[VaultRagExplorerPlugin] beginQuery complete", {
-			activeQueryCount: this.activeQueryCount,
+			activeQueryCountAfter: this.activeQueryCount,
 		});
+
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.endQuery();
+		};
 	}
 
 	endQuery(): void {
-		this.activeQueryCount = Math.max(0, this.activeQueryCount - 1);
+		if (this.activeQueryCount <= 0) {
+			console.warn("[VaultRagExplorerPlugin] endQuery called with activeQueryCount <= 0", {
+				activeQueryCount: this.activeQueryCount,
+			});
+			return;
+		}
+
 		console.log("[VaultRagExplorerPlugin] endQuery", {
-			activeQueryCount: this.activeQueryCount,
+			activeQueryCountBefore: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 		});
+		this.activeQueryCount--;
+		console.log("[VaultRagExplorerPlugin] endQuery complete", {
+			activeQueryCountAfter: this.activeQueryCount,
+		});
+
+		if (this.activeQueryCount === 0 && this.pendingAjsonReindex.size > 0 && !this.reindexDrainScheduled) {
+			console.log(`${LOG_PREFIX} draining deferred watcher events after query end`);
+			// The watcher method scheduleDrain is private but we can poke the public property
+			// to trigger a drain, or better yet, since the AjsonWatcherService has a private method,
+			// let's add a public method or just tell it to drain.
+			// actually we will call ajsonWatcher.triggerDrain() - let's add that to AjsonWatcherService
+			if (this.ajsonWatcher) {
+				this.ajsonWatcher.triggerDrain();
+			}
+		}
 	}
 
 	beginIndexing(): boolean {
@@ -85,7 +113,13 @@ export default class VaultRagExplorerPlugin extends Plugin {
 			});
 			return false;
 		}
+		console.log("[AjsonWatcherService] starting indexing", {
+			isIndexingBefore: this.isIndexing,
+		});
 		this.isIndexing = true;
+		console.log("[AjsonWatcherService] indexing started", {
+			isIndexingAfter: this.isIndexing,
+		});
 		console.log("[VaultRagExplorerPlugin] beginIndexing granted", {
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
@@ -94,10 +128,15 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	}
 
 	endIndexing(): void {
+		console.log("[AjsonWatcherService] ending indexing", {
+			isIndexingBefore: this.isIndexing,
+		});
 		this.isIndexing = false;
+		console.log("[AjsonWatcherService] indexing ended", {
+			isIndexingAfter: this.isIndexing,
+		});
 		console.log("[checker] lock release");
 		console.log("[VaultRagExplorerPlugin] endIndexing", {
-
 			activeQueryCount: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 			pendingCount: this.pendingAjsonReindex.size,

@@ -212,6 +212,7 @@ export interface RagExplorerState {
 	queryResponse: QueryResponse | null;
 	workspace: GraphWorkspaceState;
 	selectedNodeId: string | null;
+	indexingError?: string;
 	loading: {
 		query: boolean;
 		expandSemantic: boolean;
@@ -267,6 +268,7 @@ export const DEFAULT_RAG_EXPLORER_STATE: RagExplorerState = {
 	queryResponse: null,
 	workspace: EMPTY_WORKSPACE,
 	selectedNodeId: null,
+	indexingError: undefined,
 	loading: {
 		query: false,
 		expandSemantic: false,
