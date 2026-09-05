@@ -29,17 +29,6 @@ export class QueryService {
   public lockedNodesService: unknown; // We can set this from the plugin if needed.
 
   async runQuery(request: QueryRequest): Promise<QueryResponse> {
-    if (!this.plugin || typeof this.plugin.beginQuery !== "function") {
-      console.error("[QueryService] invalid plugin instance", {
-        pluginConstructor: this.plugin?.constructor?.name,
-        pluginKeys: this.plugin ? Object.keys(this.plugin).slice(0, 20) : null,
-        hasBeginQuery: typeof (this.plugin as { beginQuery?: unknown })?.beginQuery,
-        hasEndQuery: typeof (this.plugin as { endQuery?: unknown })?.endQuery,
-      });
-      throw new Error("QueryService misconfigured: plugin.beginQuery is unavailable");
-    }
-
-    this.plugin.beginQuery();
     try {
       const startTime = Date.now();
       const topK = request.options.topK;
@@ -63,17 +52,6 @@ export class QueryService {
           activeQueryCount: this.plugin.activeQueryCount,
         });
         throw new Error("[QueryService] query rejected: indexing in progress");
-      }
-
-      const maxConcurrentQueries = 1;
-      // Note: activeQueryCount is incremented by beginQuery() before this is called,
-      // so 1 means exactly this current query.
-      if (this.plugin.activeQueryCount > maxConcurrentQueries) {
-        console.log("[QueryService] query rejected: too many concurrent queries", {
-          activeQueryCount: this.plugin.activeQueryCount,
-          maxConcurrentQueries,
-        });
-        throw new Error("[QueryService] query rejected: another query is already running");
       }
 
       console.log("[QueryService] runQuery pre-flight DB check");
@@ -194,12 +172,6 @@ export class QueryService {
     } catch (error) {
       console.error(`${LOG_PREFIX} runQuery failed`, error);
       throw error;
-    } finally {
-      console.log(`${LOG_PREFIX} runQuery finally`, {
-        isIndexing: this.plugin.isIndexing,
-        activeQueryCount: this.plugin.activeQueryCount,
-      });
-      this.plugin.endQuery();
     }
   }
 

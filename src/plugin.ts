@@ -70,11 +70,18 @@ export default class VaultRagExplorerPlugin extends Plugin {
 	}
 
 	endQuery(): void {
+		if (this.activeQueryCount <= 0) {
+			console.warn("[VaultRagExplorerPlugin] endQuery called with activeQueryCount <= 0", {
+				activeQueryCount: this.activeQueryCount,
+			});
+			return;
+		}
+
 		console.log("[VaultRagExplorerPlugin] endQuery", {
 			activeQueryCountBefore: this.activeQueryCount,
 			isIndexing: this.isIndexing,
 		});
-		this.activeQueryCount = Math.max(0, this.activeQueryCount - 1);
+		this.activeQueryCount--;
 		console.log("[VaultRagExplorerPlugin] endQuery complete", {
 			activeQueryCountAfter: this.activeQueryCount,
 		});

@@ -391,6 +391,15 @@ export class VaultRagExplorerView extends ItemView {
 				return;
 			}
 
+			if (this.plugin.activeQueryCount >= 1) {
+				console.log("[VaultRagExplorerView] query rejected: another query is already running", {
+					activeQueryCount: this.plugin.activeQueryCount,
+				});
+
+				new Notice("Another query is already running.");
+				return;
+			}
+
 			const state = this.store.getState();
 			const queryText = state.currentQueryText.trim();
 			if (!queryText) {
@@ -404,15 +413,28 @@ export class VaultRagExplorerView extends ItemView {
 			runBtn.createSpan({ cls: "loading-spinner" });
 			runBtn.createSpan({ text: " Running…" });
 
+			console.log("[VaultRagExplorerView] query submit start");
+
+			console.log("[VaultRagExplorerView] pre-beginQuery state", {
+				activeQueryCount: this.plugin.activeQueryCount,
+				isIndexing: this.plugin.isIndexing,
+			});
+
 			const releaseQuery = this.plugin.beginQuery();
+
+			console.log("[VaultRagExplorerView] post-beginQuery state", {
+				activeQueryCount: this.plugin.activeQueryCount,
+			});
 			try {
+				console.log("[VaultRagExplorerView] runQuery started — spinner shown");
 				console.log("[VaultRagExplorerView] query started", {
 					queryLength: queryText.length,
 				});
 
 				await this.runQuery();
+				console.log("[VaultRagExplorerView] runQuery completed successfully");
 			} catch (error) {
-				console.error("[VaultRagExplorerView] Query failed", {
+				console.error("[VaultRagExplorerView] runQuery failed", {
 					error,
 					queryTextLength: queryText.length,
 					isIndexing: this.plugin.isIndexing,
@@ -425,6 +447,9 @@ export class VaultRagExplorerView extends ItemView {
 				);
 			} finally {
 				releaseQuery();
+				console.log("[VaultRagExplorerView] post-endQuery state", {
+					activeQueryCount: this.plugin.activeQueryCount,
+				});
 				runBtn.removeAttribute("disabled");
 				runBtn.empty();
 				runBtn.setText("Run Query");
