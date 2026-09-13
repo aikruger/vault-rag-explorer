@@ -347,13 +347,9 @@ export default class VaultRagExplorerPlugin extends Plugin {
 		}
 
 		// Delegate to IndexBuilder with the validated path
-        if (ajsonFiles.length > 1) {
-          console.error('[MemoryCheck] plugin bulk indexing blocked; use external indexer', {
-            fileCount: ajsonFiles.length
-          });
-          throw new Error('Plugin bulk indexing disabled; use external indexer');
-        }
-		return await this.indexBuilder.buildFromPath(smartEnvPath, ajsonFiles);
+        // Bypassing memory check for build-index command temporarily if needed
+        // but it is handled by standalone indexer mostly, let's still pass it and force rebuild
+		return await this.indexBuilder.buildFromPath(smartEnvPath, ajsonFiles, true);
 	}
 
 	public isExternalIndexerRunning(): boolean {

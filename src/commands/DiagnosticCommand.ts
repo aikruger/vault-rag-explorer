@@ -41,7 +41,7 @@ Size: ${health.size ?? "Unknown"}
     id: "rag-check-source-path",
     name: "Debug: Check source path in DB",
     callback: async () => {
-      const path = await plugin.app.vault.getAbstractFileByPath(
+      const path = plugin.app.vault.getAbstractFileByPath(
         plugin.app.workspace.getActiveFile()?.path ?? ""
       )?.path;
 

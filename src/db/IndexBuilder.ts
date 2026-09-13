@@ -75,14 +75,23 @@ export class IndexBuilder {
    */
   async buildFromPath(
     smartEnvPath: string,
-    ajsonFiles: string[]
+    ajsonFiles: string[],
+    forceRebuild: boolean = false
   ): Promise<{ sources: number; blocks: number; embeddings: number }> {
-    console.log("[IndexBuilder] buildFromPath start", { fileCount: ajsonFiles.length });
+    console.log("[IndexBuilder] buildFromPath START", {
+      watchFolder: smartEnvPath,
+      forceRebuild,
+    });
+    console.log("[IndexBuilder] files discovered", {
+      count: ajsonFiles.length,
+      sample: ajsonFiles.slice(0, 5),
+    });
 
-    const rawDb = this.db.getDb();
-    if (!rawDb) {
-      throw new Error("Database is not open — cannot build index");
-    }
+    try {
+      const rawDb = this.db.getDb();
+      if (!rawDb) {
+        throw new Error("Database is not open — cannot build index");
+      }
 
     // Apply performance pragmas for the write session
     rawDb.exec("PRAGMA journal_mode = WAL;");
@@ -127,8 +136,13 @@ export class IndexBuilder {
         continue;
       }
 
-      const indexedMtime = this.getIndexedFileMtime(rawDb, filePath);
-      if (indexedMtime === null || indexedMtime !== currentMtime) {
+      if (!forceRebuild) {
+        const indexedMtime = this.getIndexedFileMtime(rawDb, filePath);
+        if (indexedMtime === null || indexedMtime !== currentMtime) {
+          normalQueue.push(filePath);
+          continue;
+        }
+      } else {
         normalQueue.push(filePath);
         continue;
       }
@@ -203,14 +217,24 @@ export class IndexBuilder {
 
     await new Promise(resolve => window.setTimeout(resolve, 0));
     // We defer persistence to the caller (e.g. AjsonWatcherService or external indexer) to debounce writes.
-    console.log("[IndexBuilder] buildFromPath complete", {
-      sources: totalSources,
-      blocks: totalBlocks,
-      embeddings: resultDummy.embeddingsWritten,
-      errors: resultDummy.errors.length,
+    console.log("[IndexBuilder] buildFromPath COMPLETE", {
+      watchFolder: smartEnvPath,
+      forceRebuild,
+      result: {
+        totalFiles: ajsonFiles.length,
+        sources: totalSources,
+        blocks: totalBlocks,
+        indexed: resultDummy.embeddingsWritten,
+        skipped: skippedByMtimeAndCompleteness,
+        errors: parseErrors,
+      }
     });
 
     return { sources: totalSources, blocks: totalBlocks, embeddings: resultDummy.embeddingsWritten };
+    } catch (error) {
+      console.error("[IndexBuilder] buildFromPath threw", { error });
+      throw error;
+    }
   }
 
   public getIndexedFileMtime(rawDb: SqlJsDatabase, filePath: string): number | null {
