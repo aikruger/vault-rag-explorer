@@ -271,6 +271,45 @@ export class Database {
         return this.persistPromise;
     }
 
+    public updateSourcePath(oldPath: string, newPath: string): void {
+        console.log(`${LOG} updateSourcePath called`, { oldPath, newPath });
+
+        if (!this.db) {
+            console.warn(`${LOG} updateSourcePath failed: db not initialized`);
+            return;
+        }
+
+        const sql = `
+            UPDATE sources
+            SET path = ?
+            WHERE path = ?
+        `;
+
+        try {
+            const stmt = this.db.prepare(sql);
+            stmt.run([newPath, oldPath]);
+            stmt.free();
+
+            const changesResult = this.db.exec("SELECT changes()");
+            const rowsChanged = changesResult?.[0]?.values?.[0]?.[0] as number | undefined ?? 0;
+
+            console.log(`${LOG} updateSourcePath complete`, {
+                oldPath,
+                newPath,
+                rowsChanged,
+            });
+
+            if (rowsChanged === 0) {
+                console.warn(`${LOG} updateSourcePath: no rows updated`, {
+                    oldPath,
+                    newPath,
+                });
+            }
+        } catch (error) {
+            console.error(`${LOG} updateSourcePath failed`, { oldPath, newPath, error });
+        }
+    }
+
     public persist(): void {
         if (!this.db || !this.SQL) {
             console.warn(`${LOG} persist() called but DB or SQL is null — skipping`);
