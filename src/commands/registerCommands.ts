@@ -170,7 +170,7 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				new Notice("Set the Smart folder in settings first.");
 				return;
 			}
-			const multiPath = `${smartFolder}/multi`;
+			const multiPath = smartFolder.endsWith("/multi") ? smartFolder : `${smartFolder}/multi`;
 			console.log('[Commands] Index build — scanning folder:', multiPath);
 
 				console.log('[IndexBuilder] scan start', { smartFolderPath: smartFolder });
@@ -242,7 +242,7 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				new Notice("Set the Smart folder in settings first.");
 				return;
 			}
-			const multiPath = `${smartFolder}/multi`;
+			const multiPath = smartFolder.endsWith("/multi") ? smartFolder : `${smartFolder}/multi`;
 			console.log('[Commands] Index force build — scanning folder:', multiPath);
 
 			const folderExists = await plugin.app.vault.adapter.exists(multiPath);
@@ -528,16 +528,36 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 			id: 'build-index',
 			name: 'Vault RAG Explorer: Build Index',
 			callback: async () => {
+				console.log("[Commands] Build index triggered");
+
 				if (!plugin.settings.smartFolderPath) {
 					new Notice('Please set the Smart Connections folder in plugin settings first.');
 					return;
 				}
+
+				const folderPath = plugin.getSmartFolderPath();
+				console.log("[Commands] Smart folder path", { folderPath });
+
 				new Notice('Building index…');
 				try {
 					const result = await plugin.buildIndexFromSettings();
+					await plugin.db.persist();
 					plugin.settings.lastIndexBuild = Date.now();
 					await plugin.saveSettings();
 					new Notice(`Done: ${result.embeddings} embeddings indexed`);
+
+					try {
+						const rawDb = plugin.db.getDb();
+						const countRes = rawDb.exec("SELECT COUNT(*) FROM sources");
+						const count = countRes?.[0]?.values?.[0]?.[0] as number | undefined;
+						console.log("[Commands] sources table row count after rebuild", { count });
+
+						const sampleRes = rawDb.exec("SELECT id, path FROM sources LIMIT 5");
+						console.log("[Commands] sample source rows", { rows: sampleRes?.[0]?.values });
+					} catch (e) {
+						console.warn("[Commands] failed to log diagnostic info", e);
+					}
+					console.log("[Commands] Build index completed");
 				} catch (err) {
 					new Notice('Build failed: ' + (err as Error).message);
 					console.error('[VaultRagPlugin] command build-index failed', err);
