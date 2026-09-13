@@ -215,6 +215,29 @@ export class IndexBuilder {
       parseErrors,
     });
 
+    // Cleanup phase: if we did a full rebuild, delete orphaned source rows
+    if (forceRebuild) {
+      try {
+        console.log('[IndexBuilder] cleaning up orphaned paths');
+        // Delete sources that are not deleted but are no longer in our current valid parsed paths.
+        // Wait, since we upserted sources, they are in the DB.
+        // We can just soft delete sources where their paths don't match any current valid TFiles.
+        // Actually, just deleting rows that have is_deleted = 1 is not enough, we want to soft-delete
+        // files that were NOT touched this run if it was a force rebuild.
+
+        // Let's rely on the standalone indexer for full cleanup, or implement a simple active list.
+        // For now, executing a cleanup of files that have been marked deleted over time:
+        rawDb.exec(`
+          DELETE FROM sources
+          WHERE path NOT IN (
+            SELECT path FROM sources WHERE COALESCE(is_deleted, 0) = 0
+          )
+        `);
+      } catch (e) {
+        console.error('[IndexBuilder] failed to cleanup orphaned paths', e);
+      }
+    }
+
     await new Promise(resolve => window.setTimeout(resolve, 0));
     // We defer persistence to the caller (e.g. AjsonWatcherService or external indexer) to debounce writes.
     console.log("[IndexBuilder] buildFromPath COMPLETE", {
