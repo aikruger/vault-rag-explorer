@@ -1,4 +1,5 @@
 import type { Database } from "./Database";
+import { normaliseSqlParameterObject, logSqlOperation } from "./sqlite-helpers";
 
 const LOG_PREFIX = "[WikilinkExpander]";
 
@@ -16,7 +17,9 @@ export class WikilinkExpander {
       WHERE s.path = $path AND COALESCE(s.is_deleted, 0) = 0
     `);
 
-    outboundStmt.bind({ $path: sourcePath });
+    const outBindParams = normaliseSqlParameterObject({ $path: sourcePath });
+    logSqlOperation("outboundStmt.bind", "SELECT ...", Object.values(outBindParams));
+    outboundStmt.bind(outBindParams as any);
     const outbound: { path: string; direction: string }[] = [];
     while (outboundStmt.step()) {
        outbound.push(outboundStmt.getAsObject() as { path: string; direction: string });
@@ -30,7 +33,9 @@ export class WikilinkExpander {
       WHERE w.dst_path = $path AND COALESCE(s.is_deleted, 0) = 0
     `);
 
-    inboundStmt.bind({ $path: sourcePath });
+    const inBindParams = normaliseSqlParameterObject({ $path: sourcePath });
+    logSqlOperation("inboundStmt.bind", "SELECT ...", Object.values(inBindParams));
+    inboundStmt.bind(inBindParams as any);
     const inbound: { path: string; direction: string }[] = [];
     while (inboundStmt.step()) {
        inbound.push(inboundStmt.getAsObject() as { path: string; direction: string });

@@ -7,6 +7,7 @@ import type {
   ParseResult,
   IndexBuildResult,
 } from "../types";
+import { normaliseSqlParameterObject, logSqlOperation } from "./sqlite-helpers";
 
 const LOG_PREFIX = "[IndexBuilder]";
 
@@ -382,7 +383,9 @@ export class IndexBuilder {
       rawDb.exec("BEGIN TRANSACTION;");
       for (const source of batch) {
         try {
-          selectHash.bind({ $path: source.path });
+          const bindParams = normaliseSqlParameterObject({ $path: source.path });
+          logSqlOperation("selectHash.bind", "SELECT hash FROM sources WHERE path = $path", Object.values(bindParams));
+          selectHash.bind(bindParams as any);
           let existing: { hash: string | null } | undefined;
           if (selectHash.step()) {
              existing = selectHash.getAsObject() as { hash: string | null };
@@ -405,7 +408,9 @@ export class IndexBuilder {
           };
 
           if (existing) {
-            updateSource.run(rowParams);
+            const normParams = normaliseSqlParameterObject(rowParams);
+            logSqlOperation("updateSource.run", "UPDATE sources SET title = $title, metadata_json = $metadata_json, raw_json = $raw_json, mtime = $mtime, hash = $hash WHERE path = $path", Object.values(normParams));
+            updateSource.run(normParams as any);
             result.sourcesUpdated++;
             updatedInMethod++;
           } else {
@@ -413,7 +418,9 @@ export class IndexBuilder {
             // (by hash) already exists somewhere else under a different path.
             // If so, this is a RENAME, not a new file.
           if (source.hash) {
-            selectByHashDifferentPath.bind({ $hash: source.hash, $path: source.path });
+            const renameBindParams = normaliseSqlParameterObject({ $hash: source.hash, $path: source.path });
+            logSqlOperation("selectByHashDifferentPath.bind", "SELECT id, path FROM sources WHERE hash = $hash AND hash != '' AND path != $path", Object.values(renameBindParams));
+            selectByHashDifferentPath.bind(renameBindParams as any);
             let renameMatch: { id: number; path: string } | undefined;
             if (selectByHashDifferentPath.step()) {
               renameMatch = selectByHashDifferentPath.getAsObject() as { id: number; path: string };
@@ -421,7 +428,9 @@ export class IndexBuilder {
             selectByHashDifferentPath.reset();
 
             if (renameMatch) {
-              renameSource.run({ $id: renameMatch.id, $newPath: source.path, ...rowParams });
+              const renameRunParams = normaliseSqlParameterObject({ $id: renameMatch.id, $newPath: source.path, ...rowParams });
+              logSqlOperation("renameSource.run", "UPDATE sources SET path = $newPath...", Object.values(renameRunParams));
+              renameSource.run(renameRunParams as any);
               result.sourcesInserted++; // counted as a change, not a true fresh insert
               insertedInMethod++;
 
@@ -429,19 +438,25 @@ export class IndexBuilder {
               // content changed (or if blocks were not previously persisted correctly).
               // Proceed down to embeddings loop.
             } else {
-              insertSource.run(rowParams);
+              const normParams = normaliseSqlParameterObject(rowParams);
+              logSqlOperation("insertSource.run", "INSERT INTO sources...", Object.values(normParams));
+              insertSource.run(normParams as any);
               result.sourcesInserted++;
               insertedInMethod++;
             }
           } else {
-            insertSource.run(rowParams);
+            const normParams = normaliseSqlParameterObject(rowParams);
+            logSqlOperation("insertSource.run", "INSERT INTO sources...", Object.values(normParams));
+            insertSource.run(normParams as any);
             result.sourcesInserted++;
             insertedInMethod++;
           }
           }
 
           // Write embeddings
-          selectSourceId.bind({ $path: source.path });
+          const srcBindParams1 = normaliseSqlParameterObject({ $path: source.path });
+          logSqlOperation("selectSourceId.bind (embeddings)", "SELECT id FROM sources WHERE path = $path", Object.values(srcBindParams1));
+          selectSourceId.bind(srcBindParams1 as any);
           if (selectSourceId.step()) {
             const idRow = selectSourceId.getAsObject() as { id: number };
             const embCount = this.upsertEmbeddings(rawDb, "source", idRow.id, source.embeddings);
@@ -451,7 +466,9 @@ export class IndexBuilder {
           selectSourceId.reset();
 
           // Write wikilinks
-          selectSourceId.bind({ $path: source.path });
+          const srcBindParams2 = normaliseSqlParameterObject({ $path: source.path });
+          logSqlOperation("selectSourceId.bind (wikilinks)", "SELECT id FROM sources WHERE path = $path", Object.values(srcBindParams2));
+          selectSourceId.bind(srcBindParams2 as any);
           if (selectSourceId.step()) {
              const srcIdRow = selectSourceId.getAsObject() as { id: number };
              const wlCount = this.upsertWikilinks(rawDb, srcIdRow.id, source.outlinks);
@@ -554,7 +571,9 @@ export class IndexBuilder {
           // Resolve parent source_id — required FK
           let srcRow: { id: number } | undefined;
           try {
-            selectSourceId.bind({ $path: block.blockPath });
+            const srcBindParams = normaliseSqlParameterObject({ $path: block.blockPath });
+            logSqlOperation("selectSourceId.bind", "SELECT id FROM sources WHERE path = $path", Object.values(srcBindParams));
+            selectSourceId.bind(srcBindParams as any);
             if (selectSourceId.step()) {
               srcRow = selectSourceId.getAsObject() as { id: number };
             }
@@ -572,7 +591,9 @@ export class IndexBuilder {
 
           let existing: { id: number; hash: string | null } | undefined;
           try {
-            selectBlockHash.bind({ $block_key: block.blockKey });
+            const blockHashBindParams = normaliseSqlParameterObject({ $block_key: block.blockKey });
+            logSqlOperation("selectBlockHash.bind", "SELECT id, hash FROM blocks WHERE block_key = $block_key", Object.values(blockHashBindParams));
+            selectBlockHash.bind(blockHashBindParams as any);
             if (selectBlockHash.step()) {
               existing = selectBlockHash.getAsObject() as { id: number; hash: string | null };
             }
@@ -582,7 +603,9 @@ export class IndexBuilder {
 
           let storedHashRow: { raw_json: string } | undefined;
           try {
-            selectStoredHashRow.bind({ $block_key: block.blockKey });
+            const storedHashBindParams = normaliseSqlParameterObject({ $block_key: block.blockKey });
+            logSqlOperation("selectStoredHashRow.bind", "SELECT raw_json FROM blocks WHERE block_key = $block_key", Object.values(storedHashBindParams));
+            selectStoredHashRow.bind(storedHashBindParams as any);
             if (selectStoredHashRow.step()) {
               storedHashRow = selectStoredHashRow.getAsObject() as { raw_json: string };
             }
@@ -620,18 +643,24 @@ export class IndexBuilder {
           };
 
           if (!existing) {
-            insertBlock.run(rowParams);
+            const normParams = normaliseSqlParameterObject(rowParams);
+            logSqlOperation("insertBlock.run", "INSERT INTO blocks...", Object.values(normParams));
+            insertBlock.run(normParams as any);
             result.blocksInserted++;
             insertedInMethod++;
           } else {
-            updateBlock.run(rowParams);
+            const normParams = normaliseSqlParameterObject(rowParams);
+            logSqlOperation("updateBlock.run", "UPDATE blocks...", Object.values(normParams));
+            updateBlock.run(normParams as any);
             result.blocksUpdated++;
             updatedInMethod++;
           }
 
           // Write embeddings
           try {
-            selectBlockId.bind({ $block_key: block.blockKey });
+            const blockIdBindParams = normaliseSqlParameterObject({ $block_key: block.blockKey });
+            logSqlOperation("selectBlockId.bind", "SELECT id FROM blocks WHERE block_key = $block_key", Object.values(blockIdBindParams));
+            selectBlockId.bind(blockIdBindParams as any);
             if (selectBlockId.step()) {
               const blockIdRow = selectBlockId.getAsObject() as { id: number };
               const embCount = this.upsertEmbeddings(rawDb, "block", blockIdRow.id, block.embeddings);
@@ -707,7 +736,7 @@ export class IndexBuilder {
       try {
         const { blob, norm, isNormalized } = this.packEmbedding(emb.vec);
 
-        upsertEmb.run({
+        const embRunParams = normaliseSqlParameterObject({
           $owner_type: ownerType,
           $owner_id: ownerId,
           $model_name: emb.modelName,
@@ -717,6 +746,8 @@ export class IndexBuilder {
           $is_normalized: isNormalized ? 1 : 0,
           $embedding: blob,
         });
+        logSqlOperation("upsertEmb.run", "INSERT INTO embeddings...", Object.values(embRunParams));
+        upsertEmb.run(embRunParams as any);
 
         written++;
       } catch (e) {
@@ -771,7 +802,9 @@ export class IndexBuilder {
       try {
         let dstRow: { id: number } | undefined;
         try {
-          lookupDst.bind({ $path: dstPath });
+          const dstBindParams = normaliseSqlParameterObject({ $path: dstPath });
+          logSqlOperation("lookupDst.bind", "SELECT id FROM sources WHERE path = $path", Object.values(dstBindParams));
+          lookupDst.bind(dstBindParams as any);
           if (lookupDst.step()) {
              dstRow = lookupDst.getAsObject() as { id: number };
           }
@@ -779,7 +812,7 @@ export class IndexBuilder {
           lookupDst.reset();
         }
 
-        insertWikilink.run({
+        const wikiRunParams = normaliseSqlParameterObject({
           $src_source_id: srcSourceId,
           $dst_path: dstPath,
           $dst_source_id: dstRow ? dstRow.id : null,
@@ -787,6 +820,8 @@ export class IndexBuilder {
           $line_no: null,
           $edge_type: "wikilink",
         });
+        logSqlOperation("insertWikilink.run", "INSERT INTO wikilinks...", Object.values(wikiRunParams));
+        insertWikilink.run(wikiRunParams as any);
         written++;
       } catch (e) {
         failed++;

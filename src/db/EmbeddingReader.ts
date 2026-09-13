@@ -14,6 +14,7 @@ export interface StoredEmbedding {
 
 import type { Database as SqlJsDatabase } from "sql.js";
 import { getScalar, getRows } from "./IndexBuilder";
+import { normaliseSqlParameters, logSqlOperation } from "./sqlite-helpers";
 
 export class EmbeddingReader {
   constructor(private db: Database) {}
@@ -55,7 +56,9 @@ export class EmbeddingReader {
 
     try {
       console.log(`${LOG_PREFIX} statement prepared for loadAll`, { modelName });
-      stmt.bind([modelName]);
+      const bindParams = normaliseSqlParameters([modelName]);
+      logSqlOperation("stmt.bind (readEmbeddingsByModel)", "SELECT ...", bindParams);
+      stmt.bind(bindParams as any);
       console.log(`${LOG_PREFIX} statement bound for loadAll`, { modelName });
 
       while (stmt.step()) {
@@ -143,7 +146,9 @@ export class EmbeddingReader {
 
     try {
       console.log(`${LOG_PREFIX} statement prepared for loadForOwner`, { ownerType, ownerId, modelName });
-      stmt.bind([ownerType, ownerId, modelName]);
+      const bindParams = normaliseSqlParameters([ownerType, ownerId, modelName]);
+      logSqlOperation("stmt.bind (readEmbedding)", "SELECT ...", bindParams);
+      stmt.bind(bindParams as any);
       console.log(`${LOG_PREFIX} statement bound for loadForOwner`, { ownerType, ownerId, modelName });
 
       if (stmt.step()) {
@@ -208,7 +213,9 @@ export class EmbeddingReader {
 
     try {
       console.log(`${LOG_PREFIX} statement prepared for loadAllByDim`, { dim });
-      stmt.bind([dim]);
+      const bindParams = normaliseSqlParameters([dim]);
+      logSqlOperation("stmt.bind (readMissingEmbeddings)", "SELECT ...", bindParams);
+      stmt.bind(bindParams as any);
       console.log(`${LOG_PREFIX} statement bound for loadAllByDim`, { dim });
 
       while (stmt.step()) {
