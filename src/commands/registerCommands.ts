@@ -170,7 +170,7 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				new Notice("Set the Smart folder in settings first.");
 				return;
 			}
-			const multiPath = `${smartFolder}/multi`;
+			const multiPath = smartFolder.endsWith("/multi") ? smartFolder : `${smartFolder}/multi`;
 			console.log('[Commands] Index build — scanning folder:', multiPath);
 
 				console.log('[IndexBuilder] scan start', { smartFolderPath: smartFolder });
@@ -242,7 +242,7 @@ export function registerCommands(plugin: VaultRagExplorerPlugin): void {
 				new Notice("Set the Smart folder in settings first.");
 				return;
 			}
-			const multiPath = `${smartFolder}/multi`;
+			const multiPath = smartFolder.endsWith("/multi") ? smartFolder : `${smartFolder}/multi`;
 			console.log('[Commands] Index force build — scanning folder:', multiPath);
 
 			const folderExists = await plugin.app.vault.adapter.exists(multiPath);

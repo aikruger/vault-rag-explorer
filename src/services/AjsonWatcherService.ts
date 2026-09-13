@@ -1,5 +1,6 @@
 import type { IndexBuilder } from "../db/IndexBuilder";
 import type { Database } from "../db/Database";
+import { TFile, type EventRef, type TAbstractFile } from "obsidian";
 
 const LOG = "[AjsonWatcherService]";
 const DEBOUNCE_MS = 2000; // wait 2s after last event before re-indexing
@@ -15,7 +16,7 @@ export class AjsonWatcherService {
   private plugin: VaultRagExplorerPlugin;
   private watchPath: string = "";
   private isRunning: boolean = false;
-  private eventRef: import("obsidian").EventRef | null = null;
+  private eventRef: EventRef | null = null;
 
   constructor(
     plugin: VaultRagExplorerPlugin,
@@ -35,16 +36,17 @@ export class AjsonWatcherService {
     this.stop(); // tear down any existing watcher
 
     // Register Obsidian rename handler
-    import("obsidian").then((obsidian) => {
-      this.eventRef = this.plugin.app.vault.on("rename", (file: any, oldPath: string) => {
-        if (file instanceof obsidian.TFile) {
+    try {
+      this.eventRef = this.plugin.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
+        if (file instanceof TFile) {
           this.handleRename(file, oldPath);
         }
       });
       this.plugin.registerEvent(this.eventRef);
-    }).catch(e => {
-        console.error(`${LOG} failed to register Obsidian rename handler`, e);
-    });
+      console.log(`${LOG} rename handler registered`);
+    } catch (e) {
+      console.error(`${LOG} failed to register Obsidian rename handler`, e);
+    }
 
     const fs = require("fs");
     const path = require("path");
@@ -123,7 +125,7 @@ export class AjsonWatcherService {
     return this.isRunning;
   }
 
-  private async handleRename(file: import("obsidian").TFile, oldPath: string) {
+  private async handleRename(file: TFile, oldPath: string) {
     console.log("[AjsonWatcherService] rename detected", {
       oldPath,
       newPath: file.path,
